@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Talks on Mostly Engineering</title>
+    <link>https://maciejkula.github.io/tags/talks/</link>
+    <description>Recent content in Talks on Mostly Engineering</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 06 Aug 2015 00:00:00 +0000</lastBuildDate>
+    
+	<atom:link href="https://maciejkula.github.io/tags/talks/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+    <item>
+      <title>My approximate nearest neighbour talk at Europython 2015</title>
+      <link>https://maciejkula.github.io/2015/08/06/my-approximate-nearest-neighbour-talk-at-europython-2015/</link>
+      <pubDate>Thu, 06 Aug 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/2015/08/06/my-approximate-nearest-neighbour-talk-at-europython-2015/</guid>
+      <description>At this year&amp;rsquo;s Europython, I presented a talk on &amp;lsquo;Speeding up search with locality sensitive hashing&amp;rsquo;.
+In the talk, I presented the intuition behind locality sensitive hashing and discussed several Python packages for performing approximate nearest neighbour searches (including my own, rpforest).
+If you are interested in the details, please see my blog post on the Lyst developers blog. The recording of the talk and slides are embedded below.
+Talk:</description>
+    </item>
+    
+  </channel>
+</rss>

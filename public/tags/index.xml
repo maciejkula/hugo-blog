@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Tags on Mostly Engineering</title>
+    <link>https://maciejkula.github.io/tags/</link>
+    <description>Recent content in Tags on Mostly Engineering</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 06 Aug 2015 00:00:00 +0000</lastBuildDate>
+    
+	<atom:link href="https://maciejkula.github.io/tags/index.xml" rel="self" type="application/rss+xml" />
+    
+    
+    <item>
+      <title>Ann</title>
+      <link>https://maciejkula.github.io/tags/ann/</link>
+      <pubDate>Thu, 06 Aug 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/ann/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Blas</title>
+      <link>https://maciejkula.github.io/tags/blas/</link>
+      <pubDate>Thu, 01 Jan 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/blas/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Cython</title>
+      <link>https://maciejkula.github.io/tags/cython/</link>
+      <pubDate>Thu, 01 Jan 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/cython/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Metrics</title>
+      <link>https://maciejkula.github.io/tags/metrics/</link>
+      <pubDate>Mon, 01 Jun 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/metrics/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Online</title>
+      <link>https://maciejkula.github.io/tags/online/</link>
+      <pubDate>Mon, 01 Jun 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/online/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Scipy</title>
+      <link>https://maciejkula.github.io/tags/scipy/</link>
+      <pubDate>Sun, 22 Feb 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/scipy/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Sparse</title>
+      <link>https://maciejkula.github.io/tags/sparse/</link>
+      <pubDate>Sun, 22 Feb 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/sparse/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>Talks</title>
+      <link>https://maciejkula.github.io/tags/talks/</link>
+      <pubDate>Thu, 06 Aug 2015 00:00:00 +0000</pubDate>
+      
+      <guid>https://maciejkula.github.io/tags/talks/</guid>
+      <description></description>
+    </item>
+    
+  </channel>
+</rss>

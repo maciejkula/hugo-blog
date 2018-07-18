@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Simple MinHash implementation in Python | Mostly Engineering</title>
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/fonts.css" />
+    
+  </head>
+
+  <body>
+    <nav>
+    <ul class="menu">
+      
+      <li><a href="/">Home</a></li>
+      
+      <li><a href="/categories/">Categories</a></li>
+      
+      <li><a href="/tags/">Tags</a></li>
+      
+      <li><a href="/index.xml">Subscribe</a></li>
+      
+    </ul>
+    <hr/>
+    </nav>
+
+<div class="article-meta">
+<h1><span class="title">Simple MinHash implementation in Python</span></h1>
+
+<h2 class="date">2015/06/01</h2>
+</div>
+
+<main>
+<script type="text/javascript"
+      src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+  </script>
+
+<p><a href="http://en.wikipedia.org/wiki/MinHash">MinHash</a> is a simple but effective algorithm for estimating set similarity using the <a href="http://en.wikipedia.org/wiki/Jaccard_index">Jaccard index</a>. Both the Wikipedia entry and <a href="http://robertheaton.com/2014/05/02/jaccard-similarity-and-minhash-for-winners/">this blog post</a> are good explanations of how it works.</p>
+
+<p>MinHash is attractive because it allows us to decide how similar two sets are without having to enumerate all of their elements. If we want to know how many users that performed action <code>$A$</code> also performed action <code>$B$</code>, we can compare the MinHashes of the two sets instead of keeping track of multiple sets of millions of user ids. This is not only faster, but also has a fixed memory footprint.</p>
+
+<p>MinHash is also extremely simple to implement: all we need is a set of <code>$k$</code> hash functions, and a way of keeping track of the minimum value encountered for each hash function. The <code>$k$</code> parameter gives us a way of trading off precision and efficiency: we get higher accuracy with higher <code>$k$</code>, but it takes longer to process new data points and the hashes themselves occupy more memory.</p>
+
+<p>The following Python implementation uses the built-in <code>hash</code> function and <code>$k$</code> bitwise XOR masks for hashing, and is sufficiently fast even for high <code>$k$</code> (unless you really have a lot of data).</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-python" data-lang="python"><span style="color:#66d9ef">class</span> <span style="color:#a6e22e">MinHash</span>(object):
+
+    <span style="color:#66d9ef">def</span> __init__(self, k, seed<span style="color:#f92672">=</span><span style="color:#ae81ff">10</span>):
+
+        self<span style="color:#f92672">.</span>_k <span style="color:#f92672">=</span> k
+        self<span style="color:#f92672">.</span>_seed <span style="color:#f92672">=</span> seed
+
+        minint <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>iinfo(np<span style="color:#f92672">.</span>int64)<span style="color:#f92672">.</span>min
+        maxint <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>iinfo(np<span style="color:#f92672">.</span>int64)<span style="color:#f92672">.</span>max
+
+        self<span style="color:#f92672">.</span>_masks <span style="color:#f92672">=</span> (np<span style="color:#f92672">.</span>random<span style="color:#f92672">.</span>RandomState(seed<span style="color:#f92672">=</span>self<span style="color:#f92672">.</span>_seed)
+                       <span style="color:#f92672">.</span>randint(minint, maxint, self<span style="color:#f92672">.</span>_k))
+
+        self<span style="color:#f92672">.</span>_hashes <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>empty(self<span style="color:#f92672">.</span>_k, dtype<span style="color:#f92672">=</span>np<span style="color:#f92672">.</span>int64)
+        self<span style="color:#f92672">.</span>_hashes<span style="color:#f92672">.</span>fill(maxint)
+
+    <span style="color:#66d9ef">def</span> <span style="color:#a6e22e">add</span>(self, v):
+
+        hashes <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>bitwise_xor(self<span style="color:#f92672">.</span>_masks, hash(v))
+
+        self<span style="color:#f92672">.</span>_hashes <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>minimum(self<span style="color:#f92672">.</span>_hashes, hashes)
+
+    <span style="color:#66d9ef">def</span> <span style="color:#a6e22e">jaccard</span>(self, other):
+
+        <span style="color:#66d9ef">if</span> np<span style="color:#f92672">.</span>any(self<span style="color:#f92672">.</span>masks <span style="color:#f92672">!=</span> other<span style="color:#f92672">.</span>_masks):
+            <span style="color:#66d9ef">raise</span> <span style="color:#a6e22e">Exception</span>(<span style="color:#e6db74">&#39;Can only calculate similarity &#39;</span>
+                            <span style="color:#e6db74">&#39;between MinHashes with the same hash &#39;</span>
+                            <span style="color:#e6db74">&#39;functions.&#39;</span>)
+
+        <span style="color:#66d9ef">return</span> (self<span style="color:#f92672">.</span>_hashes <span style="color:#f92672">==</span> other<span style="color:#f92672">.</span>_hashes)<span style="color:#f92672">.</span>sum() <span style="color:#f92672">/</span> float(self<span style="color:#f92672">.</span>_k)</code></pre></div>
+</main>
+
+  <footer>
+  <script src="//yihui.name/js/math-code.js"></script>
+<script async src="//cdn.bootcss.com/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML"></script>
+
+<script async src="//yihui.name/js/center-img.js"></script>
+
+
+<script>
+var doNotTrack = false;
+if (!doNotTrack) {
+	(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+	(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+	m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+	})(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+	ga('create', 'UA-33073489-2', 'auto');
+	
+	ga('send', 'pageview');
+}
+</script>
+
+
+
+<div id="disqus_thread"></div>
+<script>
+    var disqus_config = function () {
+    
+    
+    
+    };
+    (function() {
+        if (["localhost", "127.0.0.1"].indexOf(window.location.hostname) != -1) {
+            document.getElementById('disqus_thread').innerHTML = 'Disqus comments not available by default when the website is previewed locally.';
+            return;
+        }
+        var d = document, s = d.createElement('script'); s.async = true;
+        s.src = '//' + "maciejkula" + '.disqus.com/embed.js';
+        s.setAttribute('data-timestamp', +new Date());
+        (d.head || d.body).appendChild(s);
+    })();
+</script>
+<noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+<a href="https://disqus.com" class="dsq-brlink">comments powered by <span class="logo-disqus">Disqus</span></a>
+
+
+  
+  <hr/>
+  Maciej Kula | <a href="https://github.com/maciejkula">Github</a> | <a href="https://twitter.com/Maciej_Kula">Twitter</a>
+  
+  </footer>
+  </body>
+</html>
+

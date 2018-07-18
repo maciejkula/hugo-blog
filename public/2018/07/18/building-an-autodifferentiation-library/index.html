@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Building an autodifferentiation library | Mostly Engineering</title>
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/fonts.css" />
+    
+  </head>
+
+  <body>
+    <nav>
+    <ul class="menu">
+      
+      <li><a href="/">Home</a></li>
+      
+      <li><a href="/categories/">Categories</a></li>
+      
+      <li><a href="/tags/">Tags</a></li>
+      
+      <li><a href="/index.xml">Subscribe</a></li>
+      
+    </ul>
+    <hr/>
+    </nav>
+
+<div class="article-meta">
+<h1><span class="title">Building an autodifferentiation library</span></h1>
+<h2 class="author">[maciej]</h2>
+<h2 class="date">2018/07/18</h2>
+</div>
+
+<main>
+
+
+<p><em>This blog post originally appeared on <a href="https://medium.com/@maciejkula/building-an-autodifferentiation-library-9ccf32c7a658">Medium</a></em></p>
+
+<p>Popular general-purpose <a href="https://en.wikipedia.org/wiki/Automatic%5Fdifferentiation">auto-differentiation</a> frameworks like PyTorch or TensorFlow are very capable, and, for the most part, there is little need for writing something more specialized.</p>
+
+<p>Nevertheless, I have recently started writing my own autodiff package. This blog post describes what I’ve learned along the way. Think of this as a poor-man’s version of a <a href="https://jvns.ca/">Julia Evans</a> blog post.</p>
+
+<p>Note that there are many blog posts describing the mechanics of autodifferentiation much better than I could, so I skip the explanations here. Additionally, there are several other <a href="http://colah.github.io/posts/2015-09-NN-Types-FP/">interesting</a> <a href="https://jeremyrsmith.github.io/scala-math-slides/#23">posts</a> <a href="https://blog.jle.im/entry/practical-dependent-types-in-haskell-1.html">and</a> <a href="https://arxiv.org/abs/1710.06892">articles</a> on building type-safe neural networks constructs, so while my library follows very similar patterns (statically-typed graphs and dependent types), I don’t dwell on the type system angle too much.</p>
+
+<p>Finally, In case you’d like to jump straight to the code, the end result is <a href="https://github.com/maciejkula/wyrm">here</a>, together with an obligatory neural-network based <a href="https://github.com/maciejkula/fizzbuzz">FizzBuzz solution</a>.</p>
+
+<h2 id="motivation">Motivation</h2>
+
+<p>There are a couple of reasons why I wanted to have my own autodiff/backprop framework, rather than use PyTorch or TensorFlow.</p>
+
+<ul>
+<li>PyTorch and TF are quite slow when fitting models that require little computation per minibatch. In computer vision problems so much computation is done per minibatch that framework overhead is mostly a non-issue. This isn’t true of fitting matrix-factorization-style models, useful in the recommender systems community. Even on a GPU, fitting these models is very slow.</li>
+<li>I want to be able to use my autodiff library to write and distribute models as Python packages with minimal dependencies. Being able to produce a fairly small and spelf-contained binary is an advantage over the rather heavy TF and PyTorch dependencies.</li>
+<li>It was a fun learning experience, and allowed me to understand the inner workings of mature neural network libraries in a little bit more detail.</li>
+</ul>
+
+<p>Motivated by the desire for a lightweight solution that works well for recommender (and possibly NLP) models, I wrote down a list of design constraints.</p>
+
+<ul>
+<li>I want the framework to naturally support sparse gradients: cases where the vast majority of gradients are zero. This is very common in NLP and recommender models that use large embedding layers. In any given minibatch, only a very small proportion of the embedding layer is used, and the gradients of the remaining entries are zero. Being able to skip the zeros when performing a gradient update is essential in making these models fast.</li>
+<li>I want the framework to have minimal overhead on top of the actual computation. Since I mainly want to fit small, sparse models, overhead is key. In PyTorch, the run time of such models is dominated by the overhead of looping in Python. To avoid this, my library has to forego Python in its fitting loop, and be written entirely in a compiled language to take advantage of compiler optimizations.</li>
+<li>The models graphs have to be define-by-run, much like Chainer or PyTorch. The usability and debuggability of this approach is too valuable for me to even contemplate going back to the TensorFlow way of doing things. At the same time, I’m happy for the graph to be static once defined. This helps in keeping the overhead small: I can allocate intermediate computation buffers once and keep re-using them, instead of writing a complex buffer pool system (or, worse yet, repeatedly allocating and freeing memory on every pass).</li>
+<li>I want performance to scale approximately linearly with the number of available CPU cores. This means parallelizing at the level of the entire graph rather than individual operations. Each computation thread will have its own copy of the graph, but write to shared parameter buffers on update. This is effectively the Hogwild! approach, where multiple threads of computation update shared parameter buffers concurrently, without any locking. This allows near-linear scaling with little degradation in model quality as long as gradients are relatively sparse.</li>
+</ul>
+
+<p>There is also a short list of things I don’t want, or don’t care enough about to add for now:</p>
+
+<ul>
+<li>GPU support. I mostly want to fit tiny models (or at least models with lots of parameters but little computation per minibatch).</li>
+<li>CNNs, or, indeed, tensors with more than two dimensions.</li>
+</ul>
+
+<p>Given the list of requirements (and non-requirements), some design decisions follow naturally.</p>
+
+<ul>
+<li>The whole thing is going to be written in a compiled language that is capable of producing native shared objects with no runtime. Models will also be defined in the same language.</li>
+<li>That language is going to be <a href="https://www.rust-lang.org/">Rust</a>. It’s an amazing language, and a perfect fit for this sort of task. For this reason, a lot of what follows has a Rust flavour. However, the design trade-offs I describe will (I believe) be the same in C++ and other statically typed and AOT compiled programming languages.</li>
+<li>I’m going to use <a href="https://rufflewind.com/2016-12-30/reverse-mode-automatic-differentiation">reverse-mode autodifferentiation</a>. That way, I can easily backpropagate through arbitrary (static) computation graphs with multiple inputs.</li>
+</ul>
+
+<p>When writing libraries, I often think of the API I want to be able to expose and work back from there. In this case, I want to write something like the following:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> slope <span style="color:#f92672">=</span> Parameter::new(<span style="color:#ae81ff">1.0</span>);
+<span style="color:#66d9ef">let</span> intercept <span style="color:#f92672">=</span> Parameter::new(<span style="color:#ae81ff">0.0</span>);
+<span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> Input::new(<span style="color:#ae81ff">3.0</span>);
+<span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> Input::new(<span style="color:#ae81ff">2.0</span> <span style="color:#f92672">*</span> <span style="color:#ae81ff">3.0</span> <span style="color:#f92672">+</span> <span style="color:#ae81ff">1.0</span>);
+<span style="color:#66d9ef">let</span> loss <span style="color:#f92672">=</span> (y <span style="color:#960050;background-color:#1e0010">—</span> (slope <span style="color:#f92672">*</span> x <span style="color:#f92672">+</span> intercept)).square();
+loss.backward();
+</code></pre></div>
+<p>and have it just work.</p>
+
+<p>Preliminaries done, we can move on to the fun part: figuring out how to implement the graph.</p>
+
+<h2 id="representing-the-graph">Representing the graph</h2>
+
+<p>What sort of data structure do we choose to represent the graph? I looked at two alternatives.</p>
+
+<ul>
+<li>Vector-based: all the computation nodes are stored contiguously in a vector, and use indices into that vector to address their parent nodes. For example, when creating an input node, an InputNode object is pushed onto the vector with index 0. If you then square that node, SquareNode is pushed onto the tape with index 1, knowing that its parent is an index 0. During a forward pass, the square node will use that index to get the value of its input.</li>
+<li>Graph-based. Nodes are placed at arbitrary locations in memory, and use references to their parents to maintain the graph structure. (The vector representation can be seen as a linearization of the graph-based model.)</li>
+</ul>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-nil" data-lang="nil">     Vector-based                              Graph-based
+
+   +---------------+                       +-----------------+
+   |               |                       |                 |
++--&gt;     A * B     &lt;--+                +---&gt;      A * B      &lt;--+
+|  |               |  |                |   |                 |  |
+|  +---------------+  |                |   +-----------------+  |
+|  |               |  |                |                        |
+|  |       B       +--+                |                        |
+|  |               |                   |                        |
+|  +---------------+            +------+---------+    +---------+-------+
+|  |               |            |                |    |                 |
++--+       A       |            |       A        |    |        B        |
+   |               |            |                |    |                 |
+   +---------------+            +----------------+    +-----------------+</code></pre></div>
+<p>There are a couple of advantages to the vector-based approach.</p>
+
+<ul>
+<li>All the nodes are in the same place. They are stored contiguously in memory, potentially reducing memory locality problems.</li>
+<li>It’s easy to reason about their ownership. This makes cloning the graph very easy: you just clone the node vector. This is important because I rely on having multiple copies of the graph for my parallelization approach.</li>
+<li>The nodes are arranged in topological order. We can correctly perform a forward pass with no duplicate work by simply iterating forward along the vector.</li>
+</ul>
+
+<p>But there are also disadvantages.</p>
+
+<p>It’s not clear what sort of object we are storing in the node vector. All of the nodes are different types (of different sizes), and vectors are homogeneously typed. Rust offers two solutions to this problem, but neither is fully satisfactory.</p>
+
+<p>The first is <a href="https://doc.rust-lang.org/book/first-edition/enums.html">enums</a> (sum types; ADTs; tagged unions). We define a <code>Node</code> type to be the union of all possible node types, and store that in the node vector. This way, everything has the same type. We still need to dispatch the node’s methods from the enclosing <code>Node</code> type to the contained inner node. This can be done via <a href="https://doc.rust-lang.org/book/first-edition/match.html">pattern matching</a> (a switch statement on the tags of the union type); with Rust’s support for pattern matching and macros, writing the necessary code is a breeze.</p>
+
+<p>However, this imposes a runtime cost. Every time we use a node, we need to go through the switch statement to resolve the inner type. In principle, optimizing compilers will compile such code to jump tables. In practice, the assembly generated for the dispatch code in my experiments was simply a linear scan over all the possibilities, imposing a dispatch cost that is linear in the number of concrete node types the framework supports. Worse still, the compiler is reluctant to inline both the switch itself and the called functions. The former is bad because it increases branch prediction misses, the latter increases function call overhead. (This problem is exacerbated by the recent branch-prediction attacks: it’s likely that <a href="http://archive.is/s831k">compiler mitigations</a> will make indirect instructions like these substantially more expensive.)</p>
+
+<p>The final disadvantage of using sum types for the node vector is that it results in a closed system (akin to Scala’s <a href="https://underscore.io/blog/posts/2015/06/02/everything-about-sealed.html">sealed traits</a>): downstream users of the library cannot add new node types.</p>
+
+<p>The alternative is to use Rust’s runtime polymorphism mechanism, <a href="https://doc.rust-lang.org/book/first-edition/trait-objects.html">trait objects</a>. Trait objects are a way of abstracting over the concrete type of an object: instead of storing structs inline, we hide them behind a pointer to their data and a table of their methods. When calling a method, we jump to the vtable, find the function, and execute it. Using trait objects, we put these fat pointers into the node vector instead of nodes themselves.</p>
+
+<p>This solution, however, introduces exactly the kind of indirection we set out to avoid in the first place. Additionally, it completely defeats the compiler’s efforts at inlinining: the function to be called is not known until runtime.</p>
+
+<p>What about the graph-based design? Here, each node is placed in its own location in memory, and can refer to its ancestors via references. Because each node can be re-used an arbitrary number of times, I use Rust’s equivalent of a <code>shared_ptr</code> from C++, <a href="https://doc.rust-lang.org/std/rc/struct.Rc.html"><code>the Rc&lt;T&gt;</code></a>.</p>
+
+<p>One immediate disadvantage of this approach is that it blurs the ownership structure of the graph, making cloning and serialization/deserialization difficult: because nodes can be re-used, naive cloning/deserialization will result in multiple copies of the same nodes being created.</p>
+
+<p>The second disadvantage is the lack of a readily-available topological ordering: both forward and backward passes have to be done recursively, and care has to be taken to avoid re-computing the values of shared subgraphs.</p>
+
+<p>The advantage of using the graph representation is the types of any node’s parents are known at compile time. Every node is (recursively) generic over the types of its parents: adding two InputNodes will produce an <code>AddNode&lt;InputNode, InputNode&gt;</code>. Adding that to another input node will produce an <code>AddNode&lt;AddNode&lt;InputNode, InputNode&gt;, InputNode&gt;</code> and so on. This gives me static method dispatch and the potential for inlining, in addition to a design that plays much more nicely with the type system.</p>
+
+<h2 id="results">Results</h2>
+
+<p>Using some informal benchmarks, the graph-based approach is approximately 30% faster than the vector-based approach. The end result can run a full epoch of a BPR learning-to-rank factorization model on the Movielens 100K dataset (<a href="https://github.com/maciejkula/wheedle/blob/master/src/lib.rs#L422%2529">code</a>) in under 20 milliseconds on my puny dual-core laptop, and should scale linearly with more cores.</p>
+
+<p>This takes advantage of a number of optimizations in addition to the underlying graph structure.</p>
+
+<ul>
+<li>I use Rust’s <a href="https://rust-lang-nursery.github.io/stdsimd/x86%5F64/stdsimd/">SIMD intrinsics</a> for a number of operations, like vector dot products and scaled addition.</li>
+<li>For most operations, I assume C-contiguous matrices and iterate directly over the underlying data rather than use <code>ndarrays</code> <a href="https://docs.rs/ndarray/0.11.0/ndarray/iter/struct.Iter.html">iterator methods</a>. This turns out to be much faster, presumably because it allows LLVM to autovectorize the loops.</li>
+<li>It turns out that LLVM is smart enough to autovectorize most numerical loops that don’t involve a reduction step (mostly assignments). Combined with (2), this makes a lot of numerical loops efficient with minimal optimization effort.</li>
+</ul>
+
+<p>There are a number of ways to make the computation faster still.</p>
+
+<ol>
+<li>At the moment, the code doesn’t do any subgraph result caching in the forward pass: if a node is used twice in the forward pass, all of the computations it depends on will be done twice. This can easily be solved via a simple topological sort algorithm, marking the nodes as evaluated once they have evaluated their value. (<em>Addendum: this turns out to be incredibly important for recurrent neural networks, so is now implemented.</em>)</li>
+<li>Similarly, gradients are passed straight to parameter nodes in the backward pass. If a node is used more than once, this means that unnecessary work is done in passing its gradients down one at a time. Accumulating all the gradients and only recursing once will save on that work. (<em>Addendum: as above.</em>)</li>
+<li>There is some unnecessary copying of inputs; making better use of references when possible should yield some small performance gains.</li>
+</ol>
+
+<h2 id="what-s-next">What’s next</h2>
+
+<p>I have written (and continue to maintain) a number of open-source Python ML packages. The models are written by hand in Cython, and while they perform well, extending them is tricky. This is due partly to Cython’s limitations, and partly due to the effort required for manual derivation of update rules.</p>
+
+<p>I hope that this library (or some variation thereof) will make that task easier, and allow me to more easily implement complex models and release them as standalone Python packages. I’ll report back on how I fare.</p>
+
+<h2 id="addendum">Addendum</h2>
+
+<p>Turns out that the graph representation is a little bit problematic when applied to recurrent neural networks: at every step of the recurrence, the complexity of the resulting types increases, leading to rather baroque types:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">Variable<span style="color:#f92672">&lt;</span>nodes::LogNode<span style="color:#f92672">&lt;</span>nodes::SoftmaxNode<span style="color:#f92672">&lt;</span>nodes::DotNode<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellState<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellSt
+ate<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellState<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recurrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::Par
+ameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recurrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellState<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recu
+rrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recurrent::LSTMCellHid
+den<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellState<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellState<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recurrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::Input
+Node, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recurrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>layers::recurrent::LSTMCellState<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nod
+es::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, layers::recurrent::LSTMCellHidden<span style="color:#f92672">&lt;</span>nodes::InputNode, nodes::InputNode, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;</span>
+<span style="color:#f92672">&gt;</span>, nodes::IndexNode<span style="color:#f92672">&lt;</span>nodes::ParameterNode<span style="color:#f92672">&gt;&gt;</span>, nodes::ParameterNode<span style="color:#f92672">&gt;&gt;&gt;&gt;</span>
+</code></pre></div>
+<p>Needless to say, after a couple of recurrent steps the compiler gives up. This can be resolved by implementing a fused LSTM cell, rather than assembling it from simpler operations, or opting for selective type erasure via trait objects. So far, I’ve used the second solution: the output values of each LSTM cell have their concrete types erased by boxing them up in a trait object. Still, it illustrates the dangers of relying on complex type system constructs.</p>
+
+</main>
+
+  <footer>
+  <script src="//yihui.name/js/math-code.js"></script>
+<script async src="//cdn.bootcss.com/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML"></script>
+
+<script async src="//yihui.name/js/center-img.js"></script>
+
+
+<script>
+var doNotTrack = false;
+if (!doNotTrack) {
+	(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+	(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+	m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+	})(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+	ga('create', 'UA-33073489-2', 'auto');
+	
+	ga('send', 'pageview');
+}
+</script>
+
+
+
+<div id="disqus_thread"></div>
+<script>
+    var disqus_config = function () {
+    
+    
+    
+    };
+    (function() {
+        if (["localhost", "127.0.0.1"].indexOf(window.location.hostname) != -1) {
+            document.getElementById('disqus_thread').innerHTML = 'Disqus comments not available by default when the website is previewed locally.';
+            return;
+        }
+        var d = document, s = d.createElement('script'); s.async = true;
+        s.src = '//' + "maciejkula" + '.disqus.com/embed.js';
+        s.setAttribute('data-timestamp', +new Date());
+        (d.head || d.body).appendChild(s);
+    })();
+</script>
+<noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+<a href="https://disqus.com" class="dsq-brlink">comments powered by <span class="logo-disqus">Disqus</span></a>
+
+
+  
+  <hr/>
+  Maciej Kula | <a href="https://github.com/maciejkula">Github</a> | <a href="https://twitter.com/Maciej_Kula">Twitter</a>
+  
+  </footer>
+  </body>
+</html>
+

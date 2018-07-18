@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Incremental construction of sparse matrices | Mostly Engineering</title>
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/fonts.css" />
+    
+  </head>
+
+  <body>
+    <nav>
+    <ul class="menu">
+      
+      <li><a href="/">Home</a></li>
+      
+      <li><a href="/categories/">Categories</a></li>
+      
+      <li><a href="/tags/">Tags</a></li>
+      
+      <li><a href="/index.xml">Subscribe</a></li>
+      
+    </ul>
+    <hr/>
+    </nav>
+
+<div class="article-meta">
+<h1><span class="title">Incremental construction of sparse matrices</span></h1>
+
+<h2 class="date">2015/02/22</h2>
+</div>
+
+<main>
+
+
+<p>Sparse matrices are an indispensable tool &ndash; because only non-zero entries are stored, they store information efficiently and enable (some) fast linear algera operations.</p>
+
+<p>In Python, sparse matrix support is provided by <code>scipy</code> in <a href="http://docs.scipy.org/doc/scipy/reference/sparse.html">scipy.sparse</a>. They come in a number of flavours. Crucially, there are those that use efficient storage and/or support fast linear algebra operations (<code>csr_matrix</code>, <code>csc_matrix</code>, and <code>coo_matrix</code>), and those that enable efficient incremental construction and/or random element access (<code>lil_matrix</code>, <code>dok_matrix</code>).</p>
+
+<p>A typical use case for me is constructing a sparse matrix incrementally: I may know the shape of the matrix in advance, but do not have all the elements in advance (say, I am reading the matrix from a file element-by-element).</p>
+
+<p>The scipy <a href="http://docs.scipy.org/doc/scipy/reference/sparse.html#usage-information">docs</a> suggest I use either <code>dok_matrix</code> or <code>lil_matrix</code> for that, and then convert to a more efficient representation.</p>
+
+<p>This works very well for small matrices, but for matrices with hundreds of millions of elements this simply does not work: I run out of memory whilst constructing my matrix even though <em>I know</em> that the resulting CSR matrix fits comfortably in RAM. Why is this?</p>
+
+<h3 id="delving-into-scipy-sparse-internals">Delving into scipy.sparse internals</h3>
+
+<p>Looking into the <a href="https://github.com/scipy/scipy/blob/master/scipy/sparse/lil.py">source</a> for <code>lil_matrix</code>, we can see that it stores the matrix elements in a numpy array (of <code>dtype</code> <code>object</code>) of Python lists:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-python" data-lang="python">self<span style="color:#f92672">.</span>shape <span style="color:#f92672">=</span> (M,N)
+self<span style="color:#f92672">.</span>rows <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>empty((M,), dtype<span style="color:#f92672">=</span>object)
+self<span style="color:#f92672">.</span>data <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>empty((M,), dtype<span style="color:#f92672">=</span>object)
+<span style="color:#66d9ef">for</span> i <span style="color:#f92672">in</span> range(M):
+    self<span style="color:#f92672">.</span>rows[i] <span style="color:#f92672">=</span> []
+    self<span style="color:#f92672">.</span>data[i] <span style="color:#f92672">=</span> []</code></pre></div>
+<p>These lists are then populated with column indices and entry values.</p>
+
+<p>The problem with this is that Python lists are incredibly inefficient at storing large numbers of small objects of the same type. In CPython, they are implemented as arrays of pointers to actual list elements. If we would like to store 100 32 bit integers in a Python list on a 64 bit system, CPython would allocate an array of (at least) 100 64 bit pointers, making the list overhead <em>twice</em> the size of the data we actually want to store.</p>
+
+<p>To make matters worse, a CPython 32 bit integer is represented by an instance of <a href="https://docs.python.org/2/c-api/structures.html#c.PyObject">PyObject</a>, which itself imposes additional memory overhead (the reference count of a given object, for example).</p>
+
+<p>It is this overhead that makes using <code>lil_matrix</code> (or <code>dok_matrix</code>, which uses a Python dictionary) problematic when constructing large matrices.</p>
+
+<h3 id="the-array-module-to-the-rescue">The array module to the rescue</h3>
+
+<p>What we really want, then, is a list-like object that stores numerical data efficiently. This is precisely what the <a href="https://docs.python.org/2/library/array.html">array module</a> provides. The <code>array.array</code> objects are like lists in that they support appending, but like numpy arrays in that they store their data directly in a typed buffer (and so are similar to a C++ <code>vector</code> or a Java <code>ArrayList</code>).</p>
+
+<p>What is more, because they support the <a href="https://jakevdp.github.io/blog/2014/05/05/introduction-to-the-python-buffer-protocol/">buffer protocol</a>, it is possible to create a numpy array from an <code>array.array</code> <em>without copying the underlying data</em>.</p>
+
+<p>This is perfect for implementing an incremental sparse array constructor. The following is a simple example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-python" data-lang="python"><span style="color:#f92672">import</span> array
+<span style="color:#f92672">import</span> numpy <span style="color:#f92672">as</span> np
+<span style="color:#f92672">import</span> scipy.sparse <span style="color:#f92672">as</span> sp
+
+
+<span style="color:#66d9ef">class</span> <span style="color:#a6e22e">IncrementalCOOMatrix</span>(object):
+
+    <span style="color:#66d9ef">def</span> __init__(self, shape, dtype):
+
+        <span style="color:#66d9ef">if</span> dtype <span style="color:#f92672">is</span> np<span style="color:#f92672">.</span>int32:
+            type_flag <span style="color:#f92672">=</span> <span style="color:#e6db74">&#39;i&#39;</span>
+        <span style="color:#66d9ef">elif</span> dtype <span style="color:#f92672">is</span> np<span style="color:#f92672">.</span>int64:
+            type_flag <span style="color:#f92672">=</span> <span style="color:#e6db74">&#39;l&#39;</span>
+        <span style="color:#66d9ef">elif</span> dtype <span style="color:#f92672">is</span> np<span style="color:#f92672">.</span>float32:
+            type_flag <span style="color:#f92672">=</span> <span style="color:#e6db74">&#39;f&#39;</span>
+        <span style="color:#66d9ef">elif</span> dtype <span style="color:#f92672">is</span> np<span style="color:#f92672">.</span>float64:
+            type_flag <span style="color:#f92672">=</span> <span style="color:#e6db74">&#39;d&#39;</span>
+        <span style="color:#66d9ef">else</span>:
+            <span style="color:#66d9ef">raise</span> <span style="color:#a6e22e">Exception</span>(<span style="color:#e6db74">&#39;Dtype not supported.&#39;</span>)
+
+        self<span style="color:#f92672">.</span>dtype <span style="color:#f92672">=</span> dtype
+        self<span style="color:#f92672">.</span>shape <span style="color:#f92672">=</span> shape
+
+        self<span style="color:#f92672">.</span>rows <span style="color:#f92672">=</span> array<span style="color:#f92672">.</span>array(<span style="color:#e6db74">&#39;i&#39;</span>)
+        self<span style="color:#f92672">.</span>cols <span style="color:#f92672">=</span> array<span style="color:#f92672">.</span>array(<span style="color:#e6db74">&#39;i&#39;</span>)
+        self<span style="color:#f92672">.</span>data <span style="color:#f92672">=</span> array<span style="color:#f92672">.</span>array(type_flag)
+
+    <span style="color:#66d9ef">def</span> <span style="color:#a6e22e">append</span>(self, i, j, v):
+
+        m, n <span style="color:#f92672">=</span> self<span style="color:#f92672">.</span>shape
+
+        <span style="color:#66d9ef">if</span> (i <span style="color:#f92672">&gt;=</span> m <span style="color:#f92672">or</span> j <span style="color:#f92672">&gt;=</span> n):
+            <span style="color:#66d9ef">raise</span> <span style="color:#a6e22e">Exception</span>(<span style="color:#e6db74">&#39;Index out of bounds&#39;</span>)
+
+        self<span style="color:#f92672">.</span>rows<span style="color:#f92672">.</span>append(i)
+        self<span style="color:#f92672">.</span>cols<span style="color:#f92672">.</span>append(j)
+        self<span style="color:#f92672">.</span>data<span style="color:#f92672">.</span>append(v)
+
+    <span style="color:#66d9ef">def</span> <span style="color:#a6e22e">tocoo</span>(self):
+
+        rows <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>frombuffer(self<span style="color:#f92672">.</span>rows, dtype<span style="color:#f92672">=</span>np<span style="color:#f92672">.</span>int32)
+        cols <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>frombuffer(self<span style="color:#f92672">.</span>cols, dtype<span style="color:#f92672">=</span>np<span style="color:#f92672">.</span>int32)
+        data <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>frombuffer(self<span style="color:#f92672">.</span>data, dtype<span style="color:#f92672">=</span>self<span style="color:#f92672">.</span>dtype)
+
+        <span style="color:#66d9ef">return</span> sp<span style="color:#f92672">.</span>coo_matrix((data, (rows, cols)),
+                             shape<span style="color:#f92672">=</span>self<span style="color:#f92672">.</span>shape)
+
+    <span style="color:#66d9ef">def</span> __len__(self):
+
+        <span style="color:#66d9ef">return</span> len(self<span style="color:#f92672">.</span>data)</code></pre></div>
+<p>A quick test to show that it works (and that the data are not copied when converting to a <code>coo_matrix</code>):</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-python" data-lang="python"><span style="color:#66d9ef">def</span> <span style="color:#a6e22e">test_incremental_coo</span>():
+
+    shape <span style="color:#f92672">=</span> <span style="color:#ae81ff">10</span>, <span style="color:#ae81ff">10</span>
+
+    dense <span style="color:#f92672">=</span> np<span style="color:#f92672">.</span>random<span style="color:#f92672">.</span>random(shape)
+    mat <span style="color:#f92672">=</span> IncrementalCOOMatrix(shape, np<span style="color:#f92672">.</span>float64)
+
+    <span style="color:#66d9ef">for</span> i <span style="color:#f92672">in</span> range(shape[<span style="color:#ae81ff">0</span>]):
+        <span style="color:#66d9ef">for</span> j <span style="color:#f92672">in</span> range(shape[<span style="color:#ae81ff">1</span>]):
+            mat<span style="color:#f92672">.</span>append(i, j, dense[i, j])
+
+    coo <span style="color:#f92672">=</span> mat<span style="color:#f92672">.</span>tocoo()
+
+    <span style="color:#66d9ef">assert</span> np<span style="color:#f92672">.</span>all(coo<span style="color:#f92672">.</span>todense() <span style="color:#f92672">==</span> sp<span style="color:#f92672">.</span>coo_matrix(dense)<span style="color:#f92672">.</span>todense())
+    <span style="color:#66d9ef">assert</span> coo<span style="color:#f92672">.</span>row<span style="color:#f92672">.</span>base <span style="color:#f92672">is</span> mat<span style="color:#f92672">.</span>rows
+    <span style="color:#66d9ef">assert</span> coo<span style="color:#f92672">.</span>col<span style="color:#f92672">.</span>base <span style="color:#f92672">is</span> mat<span style="color:#f92672">.</span>cols
+    <span style="color:#66d9ef">assert</span> coo<span style="color:#f92672">.</span>data<span style="color:#f92672">.</span>base <span style="color:#f92672">is</span> mat<span style="color:#f92672">.</span>data</code></pre></div>
+<p>The same approach applies to incrementally constructing a CSR matrix. Assuming that data come in order a row at a time, it&rsquo;s easy to incrementally grow the three CSR data arrays, and convert them to a <code>csr_matrix</code> without copying the underlying memory.</p>
+
+<p>(One caveat here is that <code>array</code> overallocates space when it grows. It is quite likely, therefore, that the actual memory usage will be greater than is necessary. Still, this overhead is small relative to the overhead of using an untyped Python container.)</p>
+
+</main>
+
+  <footer>
+  <script src="//yihui.name/js/math-code.js"></script>
+<script async src="//cdn.bootcss.com/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML"></script>
+
+<script async src="//yihui.name/js/center-img.js"></script>
+
+
+<script>
+var doNotTrack = false;
+if (!doNotTrack) {
+	(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+	(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+	m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+	})(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+	ga('create', 'UA-33073489-2', 'auto');
+	
+	ga('send', 'pageview');
+}
+</script>
+
+
+
+<div id="disqus_thread"></div>
+<script>
+    var disqus_config = function () {
+    
+    
+    
+    };
+    (function() {
+        if (["localhost", "127.0.0.1"].indexOf(window.location.hostname) != -1) {
+            document.getElementById('disqus_thread').innerHTML = 'Disqus comments not available by default when the website is previewed locally.';
+            return;
+        }
+        var d = document, s = d.createElement('script'); s.async = true;
+        s.src = '//' + "maciejkula" + '.disqus.com/embed.js';
+        s.setAttribute('data-timestamp', +new Date());
+        (d.head || d.body).appendChild(s);
+    })();
+</script>
+<noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+<a href="https://disqus.com" class="dsq-brlink">comments powered by <span class="logo-disqus">Disqus</span></a>
+
+
+  
+  <hr/>
+  Maciej Kula | <a href="https://github.com/maciejkula">Github</a> | <a href="https://twitter.com/Maciej_Kula">Twitter</a>
+  
+  </footer>
+  </body>
+</html>
+
