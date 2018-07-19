@@ -217,6 +217,7 @@ For fun, you can also define an ~err-nil~ function, to save typing when dealing 
 :EXPORT_FILE_NAME: evolving-lightfm
 :END:
 :LOGBOOK:
+CLOCK: [2018-07-19 Thu 12:36]--[2018-07-19 Thu 13:09] =>  0:33
 CLOCK: [2018-07-19 Thu 09:00]--[2018-07-19 Thu 09:39] =>  0:39
 :END:
 [[https://github.com/lyst/lightfm][LightFM]] was first released in 2015, and has over time become one of the most popular packages for building recommender systems. It's [[https://stackshare.io/stream/stream-and-go-news-feeds-for-over-300-million-end-users][used]] [[https://medium.com/product-at-catalant-technologies/using-lightfm-to-recommend-projects-to-consultants-44084df7321c][widely]] [[https://www.inovex.de/fileadmin/files/Vortraege/2017/PyData-Recommender-florian-wilhelm-07.2017.pdf][in]] [[https://www.lyst.com][production]] and in [[https://scholar.google.co.uk/scholar?hl=en&as_sdt=0%252C5&q=lightfm+recommender+system&btnG=][research]].
@@ -225,18 +226,20 @@ My original intention for the package was to focus exclusively on the [[https://
 
 This has proven to be a reasonable approach; with some slight additions and bugfixes over the last three years, I now consider LightFM to be more or less a /finished product/ within the constraints of the original design.
 
-This is not to say that the package does not have some rather serious flaws, the lack of user /fold-in/ being the chief one. Fold-in is an approach where new user representation can be estimated (or representations for existing users updated with new interactions) without model retraining.
+This is not to say that the package does not have some problems, the chief of which is the lack of user /fold-in/.
 
-*** Fold-in
+*** Lack of fold-in
+Fold-in is an approach where new user representation can be estimated (or representations for existing users updated with new interactions) without model retraining.
 
 I've come to view fold-in as something that a serious recommender system cannot do without. It has two chief uses:
 
 1. Real-time updating of user representations. With fold-in, it's possible to update user representations (and what recommendations they are given) in real time as they interact with your product: any new interaction can be instantly affect the system's predictions. This stands in stark contrast with a system without fold-in, where user models are only updated after, at best, daily model retraining. This makes the system both less effective (cannot quickly adapt to changing preferences) and more costly to run (it depends more of frequent costly retraining for its effectiveness).
 2. Training at scale. Without fold-in, factorization models need to be trained on every single user. If a user is not included in the training data, their representation will not be computed and they cannot be given recommendations. While LightFM is fast and parallelizes well, it is still likely that very large production system will find it impossible to scale it to their data. The solution here is sampled training. With fold-in, it's perfectly possible to sample a subset of users for model training, then fold-in the remaining users as needed.
 
-Naturally, the lack of fold-in is not a problem unique to LightFM. To the best of my knowledge, there are no Python packages that implement it (please correct me!). Arguably, LightFM can deal with this problem better than many others, as it is always possible to fold-in new users via their metadata features.
+Naturally, the lack of fold-in is not a problem unique to LightFM. To the best of my knowledge, there are no Python packages that implement it (please correct me!). Arguably, LightFM can deal with this problem better than many others, as it is always possible to fold-in new users via their metadata features. Nevertheless, it remains a problem.
 
-Nevertheless, it is still a problem. The obvious way to address it is to add (at least) user fold-in to the LightFM model; the implementation would run roughly along the following lines:
+*** Adding fold-in
+The obvious way to address the problem is to add (at least) user fold-in to the LightFM model; the implementation would run roughly along the following lines:
 
 1. Obtain a user's interactions.
 2. Initialize a random embedding vector for the user.
@@ -244,6 +247,69 @@ Nevertheless, it is still a problem. The obvious way to address it is to add (at
 4. Return the resulting embedding for prediction.
 
 I attempted to implement this, but I wasn't happy with the end result. The reasons fall roughly in two categories: firstly, the implementation is quite complex, and it stretches the existing Cython implementation to the breaking point. Secondly, other classes of models offer a much more natural way of handling the fold-in problem: I'd rather use those than try to shoehorn an ill-fitting solution onto the existing model.
+
+**** Problem 1: Cython
+I love Cython. It's a great enabler for Python programmers, and I am certain I could not have started writing high-performance Python packages without it.
+
+However, I've found that that its usefulness is greatest for relatively simple programs, and diminishes as program complexity grows. As it tails off, the advantages of using another programming language (along the lines of C++) grow: as some point, it's helpful to be able to easily reach out for more fully fledged data structures like vectors and maps, and get further away from using the C programming model of pointers and arrays. While this is possible in Cython, I think doing so is harder than using C++ directly.
+
+I think that further extensions to the LightFM code would push it past this threshold. Adding fold-in is certainly one such change.
+
+**** Problem 2: there are more suitable models
+While it is possible to add fold-in to classic factorization models, there are classes of model that handle the problem much more naturally, simply by virtue of how they approach user representations.
+
+One such class of models is [[https://github.com/hidasib/GRU4Rec][sequence-based]] [[https://maciejkula.github.io/spotlight/index.html#sequential-models][models]]. Sequence-based models take the sequence of user actions as input and transform it into a representation useful for ranking candidates for recommendation. Here, adding new interactions is simply a matter of extracting predictions based on the new data: no model fitting is involved.
+
+*** Adding new models
+Consequently, I lean towards (1) adding new models, and (2) implementing them in a language other than Cython, with greater access to external libraries, and better prospects for being extensible.
+
+To that end, I have been working on a new recommender system library, [[https://github.com/maciejkula/sbr-rs][sbr]]. It's written in [[https://www.rust-lang.org/en-US/][Rust]], a new C++-like programming language, and implements (so far) two sequence models: an [[https://docs.rs/sbr/0.4.0/sbr/models/lstm/index.html][LSTM-based one]], and one based on a simple [[https://docs.rs/sbr/0.4.0/sbr/models/ewma/index.html][exponentially weighted average]] of a user's past interactions. Importantly, both are based on [[https://github.com/maciejkula/wyrm][wyrm]], a low-overhead autodifferentiation library. My hope is that this will allow new models to be constructed as easily as they can in libraries like PyTorch.
+
+If you are a Rust user, you can try it out now. The general interface should be familiar to anyone currently using LightFM:
+#+BEGIN_SRC rust
+  extern crate sbr;
+  extern crate rand;
+
+  use std::time::Instant;
+  use rand::SeedableRng;
+
+  let mut data = sbr::datasets::download_movielens_100k().unwrap();
+
+  let mut rng = rand::XorShiftRng::from_seed([42; 16]);
+
+  let (train, test) = sbr::data::user_based_split(&mut data, &mut rng, 0.2);
+  let train_mat = train.to_compressed();
+  let test_mat = test.to_compressed();
+
+  println!("Train: {}, test: {}", train.len(), test.len());
+
+  let mut model = sbr::models::lstm::Hyperparameters::new(data.num_items(), 32)
+      .embedding_dim(32)
+      .learning_rate(0.16)
+      .l2_penalty(0.0004)
+      .lstm_variant(sbr::models::lstm::LSTMVariant::Normal)
+      .loss(sbr::models::Loss::WARP)
+      .optimizer(sbr::models::Optimizer::Adagrad)
+      .num_epochs(10)
+      .rng(rng)
+      .build();
+
+  let start = Instant::now();
+  let loss = model.fit(&train_mat).unwrap();
+  let elapsed = start.elapsed();
+  let train_mrr = sbr::evaluation::mrr_score(&model, &train_mat).unwrap();
+  let test_mrr = sbr::evaluation::mrr_score(&model, &test_mat).unwrap();
+#+END_SRC
+If you'd rather use it in Go, you can use the [[https://github.com/maciejkula/sbr-go][Go bindings]]. (You can also use it in other languages via its [[https://github.com/maciejkula/sbr-sys/blob/master/bindings.h][C bindings]].)
+*** Evolving LightFM
+I think ~sbr~ will prove to be a solid foundation for expanding and improving LightFM. However, adding it will be a radical departure from the original vision of LightFM as a package that does one thing, and one thing only: it will now be a framework.
+
+Additionally, many of the assumptions valid for the current package will have to be revisited.
+
+1. For sequence-based models (or adding time-varying intercepts), interaction timestamps will have to be present for all interactions. This means a departure from using simple ~scipy.sparse~ matrices as the main data structure for encoding training data.
+2. For models capable of fold-in, train/test splitting and evaluation routines will have to change to allow testing on a validation set of users.
+
+Taken together, these changes mean that the LightFM API will have to change substantially, leading to LightFM v2.
 
 ** TODO Thoughts on Go
 :PROPERTIES:
