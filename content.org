@@ -3,9 +3,8 @@
 
 #+hugo_weight: auto
 #+hugo_auto_set_lastmod: t
-
 * Engineering                                                  :@engineering:
-** DONE Building an autodifferentiation library
+** DONE Building an autodifferentiation library                       :wyrm:
 CLOSED: [2018-07-18 Wed 17:38]
 :PROPERTIES:
 :EXPORT_FILE_NAME: building-an-autodiff-library
@@ -143,6 +142,24 @@ es::ParameterNode>>, layers::recurrent::LSTMCellHidden<nodes::InputNode, nodes::
 #+END_SRC
 
 Needless to say, after a couple of recurrent steps the compiler gives up. This can be resolved by implementing a fused LSTM cell, rather than assembling it from simpler operations, or opting for selective type erasure via trait objects. So far, I’ve used the second solution: the output values of each LSTM cell have their concrete types erased by boxing them up in a trait object. Still, it illustrates the dangers of relying on complex type system constructs.
+** DONE Don't use explicit feedback recommenders
+CLOSED: [2018-07-19 Thu 19:02]
+:PROPERTIES:
+:EXPORT_FILE_NAME: dont-use-explicit
+:END:
+:LOGBOOK:
+CLOCK: [2018-07-19 Thu 18:51]--[2018-07-19 Thu 19:02] =>  0:11
+:END:
+Back in January, I gave a talk at the [[https://www.meetup.com/RecSys-London/events/245357880/][London RecSys Meetup]] about why explicit feedback recommender models are inferior to implicit feedback models in the vast majority of cases.
+
+The key argument is that what people choose to rate or not rate expresses a more fundamental preference than what the ratings is. Ignoring that preference and focusing on the gradations of preference /within/ ranked items is the wrong choice.
+
+The slides are below, and you can watch the recording [[https://skillsmatter.com/skillscasts/11375-explicit-vs-implicit-recommenders][here]]. If you are interested in confirming this for yourself, have a look at my [[https://github.com/maciejkula/explicit-vs-implicit][explicit-vs-implicit experiment]].
+
+#+BEGIN_EXPORT html
+<script async class="speakerdeck-embed" data-id="c528f4ca53ec44969d34478b41806698" data-ratio="1.77777777777778" src="//speakerdeck.com/assets/embed.js"></script>
+#+END_EXPORT
+
 ** TODO Doubling down on emacs
 :PROPERTIES:
 :EXPORT_FILE_NAME: doubling-down-on-emacs
@@ -212,7 +229,7 @@ For fun, you can also define an ~err-nil~ function, to save typing when dealing 
 #+END_SRC
 (Needless to say, this doesn't work very well.)
 
-** TODO Evolving LightFM
+** TODO Evolving LightFM                                           :lightfm:
 :PROPERTIES:
 :EXPORT_FILE_NAME: evolving-lightfm
 :END:
@@ -224,7 +241,7 @@ CLOCK: [2018-07-19 Thu 09:00]--[2018-07-19 Thu 09:39] =>  0:39
 
 My original intention for the package was to focus exclusively on the [[https://arxiv.org/abs/1507.08439][LightFM model]] rather than to attempt to build a wider framework incorporating multiple different models, united by common data formats and evaluation routines.
 
-This has proven to be a reasonable approach; with some slight additions and bugfixes over the last three years, I now consider LightFM to be more or less a /finished product/ within the constraints of the original design.
+This has proven to be a reasonable approach. With some slight additions and bugfixes over the last three years, I now consider LightFM to be more or less a /finished product/ within the constraints of the original design.
 
 However, I have come to believe that there are crucial features that LightFM lacks, and that cannot be addressed within the bounds of the single-model design. This blog posts sets out to outline the reasons why backwards incompatible evolution to LightFM v2 is necessary.
 
@@ -238,7 +255,7 @@ I've come to view fold-in as something that a serious recommender system cannot 
 
 Naturally, the lack of fold-in is not a problem unique to LightFM. To the best of my knowledge, there are no Python packages that implement it (please correct me!). Arguably, LightFM can deal with this better than many other libraries, as it is always possible to fold-in new users via their metadata features. Nevertheless, it remains a problem.
 
-*** Adding fold-in
+*** Challenges of adding fold-in
 The obvious way to address the problem is to add (at least) user fold-in to the LightFM model; the implementation would run roughly along the following lines:
 
 1. Obtain a user's interactions.
@@ -260,7 +277,7 @@ While it is possible to add fold-in to classic factorization models, there are c
 
 One such class of models is [[https://github.com/hidasib/GRU4Rec][sequence-based]] [[https://maciejkula.github.io/spotlight/index.html#sequential-models][models]]. Sequence-based models take the sequence of user actions as input and transform it into a representation useful for ranking candidates for recommendation. Here, adding new interactions is simply a matter of extracting predictions based on the new data: no model fitting is involved.
 
-*** Adding new models
+*** Way forward
 Consequently, I lean towards (1) adding new models, and (2) implementing them in a language other than Cython, with greater access to external libraries, and better prospects for being extensible.
 
 To that end, I have been working on a new recommender system library, [[https://github.com/maciejkula/sbr-rs][sbr]]. It's written in [[https://www.rust-lang.org/en-US/][Rust]], a new C++-like programming language, and implements (so far) two sequence models: an [[https://docs.rs/sbr/0.4.0/sbr/models/lstm/index.html][LSTM-based one]], and one based on a simple [[https://docs.rs/sbr/0.4.0/sbr/models/ewma/index.html][exponentially weighted average]] of a user's past interactions. Importantly, both are based on [[https://github.com/maciejkula/wyrm][wyrm]], a low-overhead autodifferentiation library. My hope is that this will allow new models to be constructed as easily as they can in libraries like PyTorch.
@@ -301,6 +318,7 @@ If you are a Rust user, you can try it out now. The general interface should be 
   let test_mrr = sbr::evaluation::mrr_score(&model, &test_mat).unwrap();
 #+END_SRC
 If you'd rather use it in Go, you can use the [[https://github.com/maciejkula/sbr-go][Go bindings]]. (You can also use it in other languages via its [[https://github.com/maciejkula/sbr-sys/blob/master/bindings.h][C bindings]].)
+
 *** Evolving LightFM
 I think ~sbr~ will prove to be a solid foundation for expanding and improving LightFM. However, adding it will be a radical departure from the original vision of LightFM as a package that does one thing, and one thing only: it will now be a framework.
 
@@ -309,7 +327,7 @@ Additionally, many of the assumptions valid for the current package will have to
 1. For sequence-based models (or adding time-varying intercepts), interaction timestamps will have to be present for all interactions. This means a departure from using simple ~scipy.sparse~ matrices as the main data structure for encoding training data.
 2. For models capable of fold-in, train/test splitting and evaluation routines will have to change to allow testing on a validation set of users.
 
-Taken together, these changes mean that the LightFM API will have to change substantially, leading to LightFM v2.
+Taken together, these changes mean that the LightFM API will have to change substantially. There is no clean way of doing this in a backwards-compatible way, and so LightFM will evolve into a new major version, LightFM v2.
 
 ** TODO Thoughts on Go
 :PROPERTIES:
