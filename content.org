@@ -226,17 +226,17 @@ My original intention for the package was to focus exclusively on the [[https://
 
 This has proven to be a reasonable approach; with some slight additions and bugfixes over the last three years, I now consider LightFM to be more or less a /finished product/ within the constraints of the original design.
 
-This is not to say that the package does not have some problems, the chief of which is the lack of user /fold-in/.
+However, I have come to believe that there are crucial features that LightFM lacks, and that cannot be addressed within the bounds of the single-model design. This blog posts sets out to outline the reasons why backwards incompatible evolution to LightFM v2 is necessary.
 
-*** Lack of fold-in
-Fold-in is an approach where new user representation can be estimated (or representations for existing users updated with new interactions) without model retraining.
+*** Fold-in
+LightFM's chief problem is the lack of fold-in. Fold-in is an approach where new user representation can be estimated (or representations for existing users updated with new interactions) without model retraining.
 
 I've come to view fold-in as something that a serious recommender system cannot do without. It has two chief uses:
 
 1. Real-time updating of user representations. With fold-in, it's possible to update user representations (and what recommendations they are given) in real time as they interact with your product: any new interaction can be instantly affect the system's predictions. This stands in stark contrast with a system without fold-in, where user models are only updated after, at best, daily model retraining. This makes the system both less effective (cannot quickly adapt to changing preferences) and more costly to run (it depends more of frequent costly retraining for its effectiveness).
 2. Training at scale. Without fold-in, factorization models need to be trained on every single user. If a user is not included in the training data, their representation will not be computed and they cannot be given recommendations. While LightFM is fast and parallelizes well, it is still likely that very large production system will find it impossible to scale it to their data. The solution here is sampled training. With fold-in, it's perfectly possible to sample a subset of users for model training, then fold-in the remaining users as needed.
 
-Naturally, the lack of fold-in is not a problem unique to LightFM. To the best of my knowledge, there are no Python packages that implement it (please correct me!). Arguably, LightFM can deal with this problem better than many others, as it is always possible to fold-in new users via their metadata features. Nevertheless, it remains a problem.
+Naturally, the lack of fold-in is not a problem unique to LightFM. To the best of my knowledge, there are no Python packages that implement it (please correct me!). Arguably, LightFM can deal with this better than many other libraries, as it is always possible to fold-in new users via their metadata features. Nevertheless, it remains a problem.
 
 *** Adding fold-in
 The obvious way to address the problem is to add (at least) user fold-in to the LightFM model; the implementation would run roughly along the following lines:

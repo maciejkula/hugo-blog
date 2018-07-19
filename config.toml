@@ -2,7 +2,8 @@ baseurl = "https://maciejkula.github.io"
 languageCode = "en-us"
 title = "Mostly Engineering"
 # theme = "cocoa-eh-hugo-theme"
-theme = "hugo-xmin"
+# theme = "hugo-xmin"
+theme = "er"
 # theme = "hugo-lithium-theme"
 # theme = "hugo-natrium-theme"
 # theme = "hugo-cactus-theme"
@@ -18,22 +19,22 @@ pygmentsCodeFences = true
     url = "/"
     weight = 1
 [[menu.main]]
-    name = "Categories"
-    url = "/categories/"
-    weight = 3
+    name = "About"
+    url = "/about/"
+    weight = 2
 [[menu.main]]
-    name = "Tags"
-    url = "/tags/"
-    weight = 4
+    name = "Github"
+    url = "https://github.com/maciejkula/"
+    weight = 2
+[[menu.main]]
+    name = "Twitter"
+    url = "https://twitter.com/Maciej_Kula"
+    weight = 3
 [[menu.main]]
     name = "Subscribe"
     url = "/index.xml"
 
 [params]
+    showTagCloud = false
     footer = "Maciej Kula | [Github](https://github.com/maciejkula) | [Twitter](https://twitter.com/Maciej_Kula)"
-    name = "John Doe"
-	description = "Describe your website"
-	bio = "Blogger & Programmer"
-	# Enter optionally your twitter account
-	twitter = "Your Twitter account"
     enableRSS = true
