@@ -4,6 +4,209 @@
 #+hugo_weight: auto
 #+hugo_auto_set_lastmod: t
 * Engineering                                                  :@engineering:
+** TODO Building a recommender system in Rust, part 1
+:PROPERTIES:
+:EXPORT_FILE_NAME: recommender-in-rust-part-1
+:END:
+:LOGBOOK:
+CLOCK: [2018-07-21 Sat 13:19]--[2018-07-21 Sat 13:26] =>  0:07
+CLOCK: [2018-07-21 Sat 09:45]--[2018-07-21 Sat 10:15] =>  0:30
+CLOCK: [2018-07-20 Fri 22:28]--[2018-07-20 Fri 22:58] =>  0:30
+:END:
+
+In this post, we're going to build a recommender system in Rust.
+*** Setting up a project
+Rust projects follow a certain structure, and we can set up a new project using ~cargo~:
+#+BEGIN_SRC bash
+cargo new --bin goodbooks-recommender
+#+END_SRC
+
+*** Getting the data
+:LOGBOOK:
+CLOCK: [2018-07-21 Sat 13:29]--[2018-07-21 Sat 13:38] =>  0:09
+:END:
+
+#+NAME: cargo-toml-preamble
+#+BEGIN_SRC text :exports none
+[package]
+name = "goodbooks-recommender"
+version = "0.1.0"
+authors = ["Maciej Kula"]
+#+END_SRC
+
+The first dependency we are going to use is ~reqwest~: a crate similar to Python's ~requests~ that will allow us to easily download the data we need. The second is ~failure~, a crate that makes dealing with errors easier.
+
+#+NAME: cargo-toml-reqwest
+#+BEGIN_SRC text :exports none
+reqwest = "0.8.6"
+failure = "0.1.1"
+serde = "1.0.0"
+serde_derive = "1.0.0"
+serde_json = "1.0.0"
+csv = "1.0.0"
+#+END_SRC
+**** Downloading data
+:LOGBOOK:
+CLOCK: [2018-07-21 Sat 18:55]--[2018-07-21 Sat 19:16] =>  0:21
+:END:
+
+With its help, we can start defining our download function:
+#+NAME: main-download
+#+BEGIN_SRC rust :exports code
+
+  // Need to import a couple of things from
+  // the standard library
+  use std::fs::File;
+  use std::io::BufWriter;
+  use std::path::Path;
+
+  /// Download file from `url` and save it to `destination`.
+  fn download(url: &str, destination: &Path)
+              -> Result<(), failure::Error> {
+
+      // Don't do anything if we already have the file.
+      if destination.exists() {
+          return Ok(())
+      }
+
+      // Otherwise, create a new file.
+
+      // Because each of the following operations
+      // can fail (returns a result type), we follow
+      // them with the `?` operator. If the result
+      // is an error, it will exit from the function
+      // early, propagating the result upwards; if
+      // the operation completed successfully, we get
+      // the result instead.
+      let file = File::create(destination)?;
+      let mut writer = BufWriter::new(file);
+
+      let mut response = reqwest::get(url)?;
+      response.copy_to(&mut writer)?;
+
+      Ok(())
+  }
+#+END_SRC
+
+With this, we can write a short function that downloads both the ratings file and a file that contains metadata on the books from the dataset:
+
+#+NAME: main-get-data
+#+BEGIN_SRC rust
+  fn download_data(ratings_path: &Path, books_path: &Path) {
+      let url_prefix = "https://raw.githubusercontent.com\
+                        /zygmuntz/goodbooks-10k/master";
+      let ratings_url = format!("{}/to_read.csv", url_prefix);
+      let books_url = format!("{}/books.csv", url_prefix);
+
+      download(&ratings_url,
+               ratings_path).expect("Could not download ratings");
+      download(&books_url,
+               books_path).expect("Could not download ratings");
+  }
+#+END_SRC
+
+The ratings file looks like this:
+#+BEGIN_EXAMPLE
+user_id,book_id
+9,8
+15,398
+15,275
+37,7173
+34,380
+#+END_EXAMPLE
+
+**** Parsing
+:LOGBOOK:
+CLOCK: [2018-07-21 Sat 13:44]--[2018-07-21 Sat 14:59] =>  1:15
+:END:
+We have two options for parsing the resulting CSV files. One is to parse things manually; the other, to use Rust's amazing serialization/deserialization capabilities and the [[https://crates.io/crates/csv][~csv~ crate]].
+
+The heart of Rust's serialization ecosystem lies in the [[https://serde.rs/][~serde~ crate]]. It provides traits that allow structs to be seamlessly serialized and deserialized across a variety for formats. We'll derive those on a ~WishlistEntry~ struct to be able to read it from the CSV file:
+#+NAME: main-wishlist-entry
+#+BEGIN_SRC rust
+  // Importing this allows us to autoderive
+  // the serialization traits.
+  #[macro_use]
+  extern crate serde_derive;
+
+  // This is where we get the serde traits from.
+  extern crate serde;
+
+  // An implementation of the serde encoders/decoders
+  // to and from json. We'll need this later!
+  extern crate serde_json;
+
+  #[derive(Debug, Serialize, Deserialize)]
+  struct WishlistEntry {
+      user_id: usize,
+      book_id: usize,
+  }
+#+END_SRC
+
+After importing the ~csv~ crate we're ready to write the deserialize function:
+#+NAME: main-deserialize
+#+BEGIN_SRC rust
+  extern crate csv;
+
+  fn deserialize(path: &Path)
+                 -> Result<Vec<WishlistEntry>, failure::Error> {
+
+      let mut reader = csv::Reader::from_path(path)?;
+
+      // We specify the type of the deserialized entity
+      // via a type annotation. Otherwise, the compiler has
+      // no way of knowing what sort of thing we want to
+      // deserialize!
+      // We also do a further trick where instead of deserializing
+      // into a vector of results, we deserialize into a result with
+      // a vector.
+      let entries: Vec<WishlistEntry> = reader.deserialize()
+          .collect::<Result<Vec<_>, _>>()?;
+
+      Ok(entries)
+  }
+#+END_SRC
+*** Putting it all together
+Finally, we can write our ~main~ function:
+#+NAME: main-main
+#+BEGIN_SRC rust :noweb yes
+  fn main() {
+
+      let ratings_path = Path::new("ratings.csv");
+      let books_path = Path::new("books.csv");
+
+      download_data(ratings_path, books_path);
+
+      let ratings = deserialize(ratings_path).unwrap();
+  }
+#+END_SRC
+*** The finished article
+**** Cargo.toml
+#+NAME: cargo-toml-dependencies
+#+BEGIN_SRC text :noweb yes :exports code :tangle code/goodbooks-recommender/Cargo.toml
+<<cargo-toml-preamble>>
+[dependencies]
+<<cargo-toml-reqwest>>
+#+END_SRC
+
+**** main.rs
+#+NAME: main
+#+BEGIN_SRC rust :noweb yes :tangle code/goodbooks-recommender/src/main.rs
+  extern crate reqwest;
+  extern crate failure;
+
+  <<main-wishlist-entry>>
+
+  <<main-download>>
+  <<main-deserialize>>
+
+  <<main-get-data>>
+
+  <<main-main>>
+#+END_SRC
+
+
+
 ** DONE Building an autodifferentiation library                       :wyrm:
 CLOSED: [2018-07-18 Wed 17:38]
 :PROPERTIES:
