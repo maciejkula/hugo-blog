@@ -44,9 +44,11 @@ serde = "1.0.0"
 serde_derive = "1.0.0"
 serde_json = "1.0.0"
 csv = "1.0.0"
+sbr = "0.4.0"
 #+END_SRC
 **** Downloading data
 :LOGBOOK:
+CLOCK: [2018-07-21 Sat 19:20]--[2018-07-21 Sat 19:24] =>  0:04
 CLOCK: [2018-07-21 Sat 18:55]--[2018-07-21 Sat 19:16] =>  0:21
 :END:
 
@@ -92,6 +94,7 @@ With this, we can write a short function that downloads both the ratings file an
 
 #+NAME: main-get-data
 #+BEGIN_SRC rust
+  /// Download ratings and metadata both.
   fn download_data(ratings_path: &Path, books_path: &Path) {
       let url_prefix = "https://raw.githubusercontent.com\
                         /zygmuntz/goodbooks-10k/master";
@@ -117,6 +120,7 @@ user_id,book_id
 
 **** Parsing
 :LOGBOOK:
+CLOCK: [2018-07-22 Sun 19:26]--[2018-07-22 Sun 19:52] =>  0:26
 CLOCK: [2018-07-21 Sat 13:44]--[2018-07-21 Sat 14:59] =>  1:15
 :END:
 We have two options for parsing the resulting CSV files. One is to parse things manually; the other, to use Rust's amazing serialization/deserialization capabilities and the [[https://crates.io/crates/csv][~csv~ crate]].
@@ -148,7 +152,9 @@ After importing the ~csv~ crate we're ready to write the deserialize function:
 #+BEGIN_SRC rust
   extern crate csv;
 
-  fn deserialize(path: &Path)
+  /// Deserialize from file at `path` into a vector of
+  /// `WishlistEntry`.
+  fn deserialize_ratings(path: &Path)
                  -> Result<Vec<WishlistEntry>, failure::Error> {
 
       let mut reader = csv::Reader::from_path(path)?;
@@ -166,6 +172,78 @@ After importing the ~csv~ crate we're ready to write the deserialize function:
       Ok(entries)
   }
 #+END_SRC
+
+We also want to deserialize the metadata. We're only really interested in the book id and title, as this is what will allow us to make and evaluate recommendations based on titles rather than book ids.
+
+As before, we define a struct and a corresponding deserialize function. This time, we are going to return two mappings instead of a vector: the first mapping book ids to book titles, the second book titles to book ids.
+#+NAME: main-deserialize-metadata
+#+BEGIN_SRC rust
+  #[derive(Debug, Deserialize, Serialize)]
+  struct Book {
+      book_id: usize,
+      title: String
+  }
+
+  // We'll use the stdlib hashmap for the mapping.
+  use std::collections::HashMap;
+
+  /// Deserialize from file at `path` into the book
+  /// mappings.
+  fn deserialize_books(path: &Path)
+     -> Result<(HashMap<usize, String>,
+                HashMap<String, usize>), failure::Error> {
+
+      let mut reader = csv::Reader::from_path(path)?;
+
+      let entries: Vec<Book> = reader.deserialize::<Book>()
+          .collect::<Result<Vec<_>, _>>()?;
+
+      // We can simply iterate over the entries and collect
+      // them into a different data structure. This is not
+      // the most efficient solution but it will do for now.
+      let id_to_title: HashMap<usize, String> = entries
+          .iter()
+          .map(|book| (book.book_id, book.title.clone()))
+          .collect();
+      let title_to_id: HashMap<String, usize> = entries
+          .iter()
+          .map(|book| (book.title.clone(), book.book_id))
+          .collect();
+
+      Ok((id_to_title, title_to_id))
+  }
+#+END_SRC
+*** Fitting a model
+Now that we have read the data, we can start thinking about what models to fit, and how to fit them.
+
+The [[https://github.com/maciejkula/sbr-rs][~sbr~]] package implements two recommender models:
+- an LSTM-based model, and 
+- an exponential moving average (EWMA) model.
+
+The first is much more powerful: it implements a full LSTM model, taking a user's history of past interactions and trying to predict their next action. The second is much simpler computationally, but seems to perform fairly well on the Movielens dataset, and we're going to use it for this example.
+
+The first thing we need to do is to write a function that will set up all the hyperparameters of the model:
+#+NAME: main-hyperparameters
+#+BEGIN_SRC rust :noweb yes
+  extern crate sbr;
+
+  use sbr::models::ewma::{Hyperparameters, ImplicitEWMAModel};
+  use sbr::models::{Loss, Optimizer};
+
+  fn build_model(num_items: usize) -> ImplicitEWMAModel {
+      let hyperparameters = Hyperparameters::new(num_items, 128)
+          .embedding_dim(32)
+          .learning_rate(0.16)
+          .l2_penalty(0.0004)
+          .loss(Loss::Hinge)
+          .optimizer(Optimizer::Adagrad)
+          .num_epochs(10)
+          .num_threads(1);
+
+      hyperparameters.build()
+  }
+#+END_SRC
+
 *** Putting it all together
 Finally, we can write our ~main~ function:
 #+NAME: main-main
@@ -177,7 +255,12 @@ Finally, we can write our ~main~ function:
 
       download_data(ratings_path, books_path);
 
-      let ratings = deserialize(ratings_path).unwrap();
+      let ratings = deserialize_ratings(ratings_path).unwrap();
+      let (id_to_title,
+           title_to_id) = deserialize_books(books_path).unwrap();
+
+      println!("Deserialized {} ratings.", ratings.len());
+      println!("Deserialized {} books.", id_to_title.len());
   }
 #+END_SRC
 *** The finished article
@@ -185,6 +268,7 @@ Finally, we can write our ~main~ function:
 #+NAME: cargo-toml-dependencies
 #+BEGIN_SRC text :noweb yes :exports code :tangle code/goodbooks-recommender/Cargo.toml
 <<cargo-toml-preamble>>
+
 [dependencies]
 <<cargo-toml-reqwest>>
 #+END_SRC
@@ -199,6 +283,8 @@ Finally, we can write our ~main~ function:
 
   <<main-download>>
   <<main-deserialize>>
+  <<main-deserialize-metadata>>
+  <<main-hyperparameters>>
 
   <<main-get-data>>
 
