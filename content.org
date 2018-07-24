@@ -7,6 +7,7 @@
 ** TODO Building a recommender system in Rust, part 1
 :PROPERTIES:
 :EXPORT_FILE_NAME: recommender-in-rust-part-1
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER: :math true
 :END:
 :LOGBOOK:
 CLOCK: [2018-07-21 Sat 13:19]--[2018-07-21 Sat 13:26] =>  0:07
@@ -45,6 +46,7 @@ serde_derive = "1.0.0"
 serde_json = "1.0.0"
 csv = "1.0.0"
 sbr = "0.4.0"
+rand = "0.5.4"
 #+END_SRC
 **** Downloading data
 :LOGBOOK:
@@ -96,15 +98,15 @@ With this, we can write a short function that downloads both the ratings file an
 #+BEGIN_SRC rust
   /// Download ratings and metadata both.
   fn download_data(ratings_path: &Path, books_path: &Path) {
-      let url_prefix = "https://raw.githubusercontent.com\
-                        /zygmuntz/goodbooks-10k/master";
-      let ratings_url = format!("{}/to_read.csv", url_prefix);
-      let books_url = format!("{}/books.csv", url_prefix);
+      let ratings_url = "https://github.com/zygmuntz/\
+                         goodbooks-10k/raw/master/ratings.csv";
+      let books_url = "https://github.com/zygmuntz/\
+                       goodbooks-10k/raw/master/books.csv";
 
       download(&ratings_url,
                ratings_path).expect("Could not download ratings");
       download(&books_url,
-               books_path).expect("Could not download ratings");
+               books_path).expect("Could not download metadata");
   }
 #+END_SRC
 
@@ -214,14 +216,27 @@ As before, we define a struct and a corresponding deserialize function. This tim
   }
 #+END_SRC
 *** Fitting a model
+:LOGBOOK:
+CLOCK: [2018-07-24 Tue 09:10]
+CLOCK: [2018-07-23 Mon 18:56]--[2018-07-23 Mon 19:09] =>  0:13
+:END:
 Now that we have read the data, we can start thinking about what models to fit, and how to fit them.
 
 The [[https://github.com/maciejkula/sbr-rs][~sbr~]] package implements two recommender models:
 - an LSTM-based model, and 
 - an exponential moving average (EWMA) model.
 
-The first is much more powerful: it implements a full LSTM model, taking a user's history of past interactions and trying to predict their next action. The second is much simpler computationally, but seems to perform fairly well on the Movielens dataset, and we're going to use it for this example.
+The first is much more powerful: it implements a full LSTM model, taking a user's history of past interactions and trying to predict their next action.
 
+The second is simpler computationally: the user representation at time \(t\), \(u_t\) , is simply an exponentially weighted average of \(i_t\), the ($d$-dimensional) embeddings of items the user interacted with at time \(t\):
+\[
+   u_t = (1 - \sigma(\alpha))u_{t-1} + \sigma(\alpha)i_t,
+\]
+where \(\sigma(\alpha)\) is the exponential averaging weight, rescaled to lie between 0 and via the sigmoid function \(\sigma\).
+
+Despite its simplicity, the model seems to perform fairly well on the Movielens dataset, and we're going to use it for this example.
+
+**** Setting up hyperparameters
 The first thing we need to do is to write a function that will set up all the hyperparameters of the model:
 #+NAME: main-hyperparameters
 #+BEGIN_SRC rust :noweb yes
@@ -235,13 +250,94 @@ The first thing we need to do is to write a function that will set up all the hy
           .embedding_dim(32)
           .learning_rate(0.16)
           .l2_penalty(0.0004)
-          .loss(Loss::Hinge)
+          .loss(Loss::WARP)
           .optimizer(Optimizer::Adagrad)
           .num_epochs(10)
           .num_threads(1);
 
       hyperparameters.build()
   }
+#+END_SRC
+
+**** Preparing data
+The second is to convert the ~WishlistEntry~ objects into ~sbr~'s [[https://docs.rs/sbr/0.4.0/sbr/data/struct.Interactions.html][~Interaction~]] objects:
+#+NAME: main-interaction-convert
+#+BEGIN_SRC rust :noweb yes
+  use sbr::data::{Interaction, Interactions};
+
+  fn build_interactions(data: &[WishlistEntry]) -> Interactions {
+      // If the collection is empty, `max` doesn't exist. This
+      // is why we get an Option back, which we then unwrap.
+      let num_users = data
+          .iter()
+          .map(|x| x.user_id)
+          .max()
+          .unwrap() + 1;
+      let num_items = data
+          .iter()
+          .map(|x| x.book_id)
+          .max()
+          .unwrap() + 1;
+
+      let mut interactions = Interactions::new(num_users,
+                                               num_items);
+
+      // There are no timestamps in the interaction data, but
+      // we make use of the fact that they are sorted by time.
+      for (idx, datum) in data.iter().enumerate() {
+          interactions.push(
+              Interaction::new(datum.user_id,
+                               datum.book_id,
+                               idx)
+          );
+      }
+
+      interactions
+  }
+#+END_SRC
+
+**** Fitting
+:LOGBOOK:
+CLOCK: [2018-07-23 Mon 21:22]--[2018-07-23 Mon 21:43] =>  0:21
+CLOCK: [2018-07-23 Mon 19:16]--[2018-07-23 Mon 19:20] =>  0:04
+:END:
+The model fitting itself is easy: we've set up the data and hyperparameters, and all that is left is to fit the model, making sure we have a train-test split to evaluate performance:
+#+NAME: main-fit
+#+BEGIN_SRC rust
+  // We need to import the rand crate.
+  extern crate rand;
+  use rand::SeedableRng;
+
+  // We perform a split where the train and test
+  // sets are disjoint on the user dimension: no
+  // single user is in both.
+  use sbr::data::user_based_split;
+  use sbr::OnlineRankingModel;
+
+  use sbr::evaluation::mrr_score;
+
+  /// Fit the model.
+  ///
+  /// If successful, return the MRR on the test set.
+  /// Otherwise, return an error.
+  fn fit(model: &mut ImplicitEWMAModel,
+         data: &Interactions)
+         -> Result<f32, failure::Error> {
+
+      // Use a fixed seed for repeatable results.
+      let mut rng = rand::XorShiftRng::from_seed([42; 16]);
+
+      let (train, test) = user_based_split(data,
+                                           &mut rng,
+                                           0.2);
+
+      model.fit(&train.to_compressed())?;
+
+      let mrr = mrr_score(model, &test.to_compressed())?;
+
+      Ok(mrr)
+  }
+
 #+END_SRC
 
 *** Putting it all together
@@ -261,6 +357,13 @@ Finally, we can write our ~main~ function:
 
       println!("Deserialized {} ratings.", ratings.len());
       println!("Deserialized {} books.", id_to_title.len());
+
+      let interactions = build_interactions(&ratings);
+      let mut model = build_model(interactions.num_items());
+
+      println!("Fitting...");
+      let mrr = fit(&mut model, &interactions).expect("Unable to fit model.");
+      println!("Fit model with MRR of {:.2}", mrr);
   }
 #+END_SRC
 *** The finished article
@@ -285,6 +388,8 @@ Finally, we can write our ~main~ function:
   <<main-deserialize>>
   <<main-deserialize-metadata>>
   <<main-hyperparameters>>
+  <<main-interaction-convert>>
+  <<main-fit>>
 
   <<main-get-data>>
 
