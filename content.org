@@ -41,6 +41,8 @@ The first dependency we are going to use is ~reqwest~: a crate similar to Python
 #+BEGIN_SRC text :exports none
 reqwest = "0.8.6"
 failure = "0.1.1"
+
+# I'll mention the remaining dependencies later
 serde = "1.0.0"
 serde_derive = "1.0.0"
 serde_json = "1.0.0"
@@ -50,6 +52,7 @@ rand = "0.5.4"
 #+END_SRC
 **** Downloading data
 :LOGBOOK:
+CLOCK: [2018-07-24 Tue 14:48]--[2018-07-24 Tue 15:13] =>  0:25
 CLOCK: [2018-07-21 Sat 19:20]--[2018-07-21 Sat 19:24] =>  0:04
 CLOCK: [2018-07-21 Sat 18:55]--[2018-07-21 Sat 19:16] =>  0:21
 :END:
@@ -79,7 +82,7 @@ With its help, we can start defining our download function:
       // can fail (returns a result type), we follow
       // them with the `?` operator. If the result
       // is an error, it will exit from the function
-      // early, propagating the result upwards; if
+      // early, propagating the error upwards; if
       // the operation completed successfully, we get
       // the result instead.
       let file = File::create(destination)?;
@@ -217,7 +220,7 @@ As before, we define a struct and a corresponding deserialize function. This tim
 #+END_SRC
 *** Fitting a model
 :LOGBOOK:
-CLOCK: [2018-07-24 Tue 09:10]
+CLOCK: [2018-07-24 Tue 09:10]--[2018-07-24 Tue 09:49] =>  0:39
 CLOCK: [2018-07-23 Mon 18:56]--[2018-07-23 Mon 19:09] =>  0:13
 :END:
 Now that we have read the data, we can start thinking about what models to fit, and how to fit them.
@@ -237,6 +240,9 @@ where \(\sigma(\alpha)\) is the exponential averaging weight, rescaled to lie be
 Despite its simplicity, the model seems to perform fairly well on the Movielens dataset, and we're going to use it for this example.
 
 **** Setting up hyperparameters
+:LOGBOOK:
+CLOCK: [2018-07-25 Wed 18:03]
+:END:
 The first thing we need to do is to write a function that will set up all the hyperparameters of the model:
 #+NAME: main-hyperparameters
 #+BEGIN_SRC rust :noweb yes
@@ -340,14 +346,39 @@ The model fitting itself is easy: we've set up the data and hyperparameters, and
 
 #+END_SRC
 
-*** Putting it all together
-Finally, we can write our ~main~ function:
-#+NAME: main-main
+On my machine, this takes about a minute and a half, and achieves an MRR of 0.09. This is an OK result. To improve it, we could perform a hyperparameter search --- the ~Hyperparameters~ struct has a [[https://docs.rs/sbr/0.4.0/sbr/models/ewma/struct.Hyperparameters.html#method.random][~random~]] constructor that facilitates this. For now, however, we'll stick with this what we have.
+
+Once we have the model, we'll want to save it for future use. Again, we'll use the ~serde~ library to do so:
+#+NAME: main-model-serialize
+#+BEGIN_SRC rust
+  fn serialize_model(model: &ImplicitEWMAModel,
+                     path: &Path) -> Result<(), failure::Error> {
+
+      let file = File::create(path)?;
+      let mut writer = BufWriter::new(file);
+
+      Ok(serde_json::to_writer(&mut writer, model)?)
+  }
+#+END_SRC
+
+Wiring all the bits together gives
+#+NAME: main-main-build
 #+BEGIN_SRC rust :noweb yes
-  fn main() {
+  /// Download training data and build a model.
+  ///
+  /// We'll use this function to power the `fit`
+  /// subcommand of our command line tool.
+  fn main_build() {
 
       let ratings_path = Path::new("ratings.csv");
       let books_path = Path::new("books.csv");
+      let model_path = Path::new("model.json");
+
+      // Exit early if we already have a model.
+      if model_path.exists() {
+          println!("Model already fitted.");
+          return ();
+      }
 
       download_data(ratings_path, books_path);
 
@@ -362,9 +393,144 @@ Finally, we can write our ~main~ function:
       let mut model = build_model(interactions.num_items());
 
       println!("Fitting...");
-      let mrr = fit(&mut model, &interactions).expect("Unable to fit model.");
+      let mrr = fit(&mut model, &interactions)
+          .expect("Unable to fit model.");
       println!("Fit model with MRR of {:.2}", mrr);
+
+      serialize_model(&model, &model_path)
+          .expect("Unable to serialize model.");
   }
+#+END_SRC
+*** Getting predictions
+We need two bits here: (1) deserializing the model, and (2) getting predictions.
+
+For the first, the following should suffice:
+#+NAME: main-model-deserialize
+#+BEGIN_SRC rust
+  use std::io::Read;
+  use std::io::BufReader;
+
+  fn deserialize_model() -> Result<ImplicitEWMAModel,
+                                   failure::Error> {
+
+      let file = File::open("model.json")?;
+
+      let model = serde_json::from_reader(&file)?;
+
+      Ok(model)
+  }
+#+END_SRC
+
+For the second, we'll accept a sequence of book titles as input, translate to indices, get predictions, and translate back to book titles.
+#+NAME: main-model-predict
+#+BEGIN_SRC rust
+  fn predict(input_titles: &[String],
+             model: &ImplicitEWMAModel)
+             -> Result<Vec<String>, failure::Error> {
+      let (id_to_title,
+           title_to_id) = deserialize_books(
+          &Path::new("books.csv")
+      ).unwrap();
+
+      // Let's first check if the inputs are valid.
+      for title in input_titles {
+          if !title_to_id.contains_key(title) {
+              println!("No such title, ignoring: {}", title);
+          }
+      }
+
+      // Map the titles to indices.
+      let input_indices: Vec<_> = input_titles
+          .iter()
+          .filter_map(|title| title_to_id.get(title))
+          .cloned()
+          .collect();
+      let indices_to_score: Vec<usize> =
+          (0..id_to_title.len()).collect();
+
+      // Get the user representation.
+      let user = model.user_representation(&input_indices)?;
+      // Get the actual predictions.
+      let predictions = model.predict(&user, &indices_to_score)?;
+
+      // We implement argsort by zipping item indices
+      // with their scores into tuples...
+      let mut predictions: Vec<_>
+          = indices_to_score.iter()
+          .zip(predictions)
+          .map(|(idx, score)| (idx, score))
+          .collect();
+
+      // ...and sorting the result in descending order.
+      // This is a little tricky for floats are they
+      // are not always comparable (they could be NaN or Inf),
+      // so we use partial sorting and fail the program
+      // if non-finite values are encountered.
+      predictions
+          .sort_by(|(_, score_a), (_, score_b)|
+                   score_b.partial_cmp(score_a)
+                   .unwrap());
+
+      // Finally, we get the names for the top 10 items.
+      Ok((&predictions[..10])
+         .iter()
+         .map(|(idx, _)| id_to_title.get(idx).unwrap())
+         .cloned()
+         .collect())
+  }
+#+END_SRC
+*** Putting it all together
+Finally, we can write our ~main~ function. It'll look at the command line arguments and call either the model building or the prediction functions.
+#+NAME: main-main
+#+BEGIN_SRC rust :noweb yes
+    fn main() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+
+        if args.is_empty() {
+            println!("First argument must be \
+                      one of 'fit' or 'predict'.");
+            return ();
+        }
+
+        // We need to convert a `String` into a
+        // `&str` here. This is one of the few
+        // cases where Rust's ergonomics still
+        // have some way to go.
+        match &args[0][..] {
+            "fit" => main_build(),
+            "predict" => {
+                let model = deserialize_model()
+                    .expect("Unable to deserialize model.");
+                let predictions = predict(&args[1..], &model)
+                    .expect("Unable to get predictions");
+                println!("Predictions:");
+                for prediction in predictions {
+                    println!("    {}", prediction);
+                }
+            },
+            _ => println!("First argument must be \
+                           one of 'fit' or 'predict'."),
+        }
+    }
+#+END_SRC
+
+What about the results? They look reasonable at first blush:
+#+BEGIN_SRC shell
+time cargo run --release -- predict "Harry Potter and the Order of the Phoenix (Harry Potter, #5, Part 1)"
+  Finished release [optimized] target(s) in 0.12s
+     Running `target/release/goodbooks-recommender predict 'Harry Potter and the Order of the Phoenix (Harry Potter, #5, Part 1)'`
+Predictions:
+    Harry Potter and the Order of the Phoenix (Harry Potter, #5, Part 1)
+    Harry Potter and the Prisoner of Azkaban (Harry Potter, #3)
+    Quidditch Through the Ages
+    Harry Potter and the Goblet of Fire (Harry Potter, #4)
+    Harry Potter and the Sorcerer's Stone (Harry Potter, #1)
+    Harry Potter: Film Wizardry
+    The Harry Potter Collection 1-4 (Harry Potter, #1-4)
+    Harry Potter and the Chamber of Secrets (Harry Potter, #2)
+    Harry Potter and the Deathly Hallows (Harry Potter, #7)
+    Harry Potter and the Order of the Phoenix (Harry Potter, #5)
+
 #+END_SRC
 *** The finished article
 **** Cargo.toml
@@ -390,6 +556,10 @@ Finally, we can write our ~main~ function:
   <<main-hyperparameters>>
   <<main-interaction-convert>>
   <<main-fit>>
+  <<main-model-serialize>>
+  <<main-main-build>>
+  <<main-model-deserialize>>
+  <<main-model-predict>>
 
   <<main-get-data>>
 
@@ -650,6 +820,9 @@ I've come to view fold-in as something that a serious recommender system cannot 
 Naturally, the lack of fold-in is not a problem unique to LightFM. To the best of my knowledge, there are no Python packages that implement it (please correct me!). Arguably, LightFM can deal with this better than many other libraries, as it is always possible to fold-in new users via their metadata features. Nevertheless, it remains a problem.
 
 *** Challenges of adding fold-in
+:LOGBOOK:
+CLOCK: [2018-07-25 Wed 18:03]--[2018-07-25 Wed 18:03] =>  0:00
+:END:
 The obvious way to address the problem is to add (at least) user fold-in to the LightFM model; the implementation would run roughly along the following lines:
 
 1. Obtain a user's interactions.
