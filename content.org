@@ -16,7 +16,7 @@ CLOCK: [2018-07-21 Sat 09:45]--[2018-07-21 Sat 10:15] =>  0:30
 CLOCK: [2018-07-20 Fri 22:28]--[2018-07-20 Fri 22:58] =>  0:30
 :END:
 
-In this post, we're going to build a sequence-based recommender system in Rust: a sytem that accepts a person's reading history as input, and outputs recommendations on what to read next.
+In this post, we're going to build a sequence-based recommender system in Rust: a system that accepts a person's reading history as input, and outputs recommendations on what to read next.
 
 Building systems like this -- like much of machine learning and data science -- is normally the province of Python. The combination of numpy, pandas, and other libraries that build on them makes doing data science in Python a breeze.
 
@@ -77,6 +77,11 @@ CLOCK: [2018-07-21 Sat 18:55]--[2018-07-21 Sat 19:16] =>  0:21
 With its help, we can start defining our download function:
 #+NAME: main-download
 #+BEGIN_SRC rust :exports code
+  // Make sure we have our third-party dependencies.
+  // (This is going away in future Rust, since it
+  // simply duplicates what's already in Cargo.toml.)
+  extern crate reqwest;
+  extern crate failure;
 
   // Need to import a couple of things from
   // the standard library
@@ -103,6 +108,9 @@ With its help, we can start defining our download function:
       // the operation completed successfully, we get
       // the result instead.
       let file = File::create(destination)?;
+
+      // We need the `mut` annotation, because
+      // we're mutating (writing to) the writer.
       let mut writer = BufWriter::new(file);
 
       let mut response = reqwest::get(url)?;
@@ -514,7 +522,7 @@ Finally, we can write our ~main~ function. It'll look at the command line argume
         // `&str` here. This is one of the few
         // cases where Rust's ergonomics still
         // have some way to go.
-        match &args[0][..] {
+        match args[0].as_ref() {
             "fit" => main_build(),
             "predict" => {
                 let model = deserialize_model()
@@ -580,9 +588,6 @@ The final result looks like this:
 **** main.rs
 #+NAME: main
 #+BEGIN_SRC rust :noweb yes :tangle code/goodbooks-recommender/src/main.rs
-  extern crate reqwest;
-  extern crate failure;
-
   <<main-wishlist-entry>>
 
   <<main-download>>

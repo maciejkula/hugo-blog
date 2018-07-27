@@ -1,6 +1,3 @@
-extern crate reqwest;
-extern crate failure;
-
 // Importing this allows us to autoderive
 // the serialization traits.
 #[macro_use]
@@ -20,6 +17,11 @@ struct WishlistEntry {
     book_id: usize,
 }
 
+// Make sure we have our third-party dependencies.
+// (This is going away in future Rust, since it
+// simply duplicates what's already in Cargo.toml.)
+extern crate reqwest;
+extern crate failure;
 
 // Need to import a couple of things from
 // the standard library
@@ -46,6 +48,9 @@ fn download(url: &str, destination: &Path)
     // the operation completed successfully, we get
     // the result instead.
     let file = File::create(destination)?;
+
+    // We need the `mut` annotation, because
+    // we're mutating (writing to) the writer.
     let mut writer = BufWriter::new(file);
 
     let mut response = reqwest::get(url)?;
@@ -327,7 +332,7 @@ fn main() {
     // `&str` here. This is one of the few
     // cases where Rust's ergonomics still
     // have some way to go.
-    match &args[0][..] {
+    match args[0].as_ref() {
         "fit" => main_build(),
         "predict" => {
             let model = deserialize_model()

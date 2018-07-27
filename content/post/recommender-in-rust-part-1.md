@@ -2,14 +2,14 @@
 title = "Recommending books (with Rust)"
 author = ["maciej"]
 date = 2018-07-27T09:17:00-07:00
-lastmod = 2018-07-27T09:18:32-07:00
+lastmod = 2018-07-27T10:03:05-07:00
 categories = ["engineering"]
 draft = false
 weight = 2001
 math = true
 +++
 
-In this post, we're going to build a sequence-based recommender system in Rust: a sytem that accepts a person's reading history as input, and outputs recommendations on what to read next.
+In this post, we're going to build a sequence-based recommender system in Rust: a system that accepts a person's reading history as input, and outputs recommendations on what to read next.
 
 Building systems like this -- like much of machine learning and data science -- is normally the province of Python. The combination of numpy, pandas, and other libraries that build on them makes doing data science in Python a breeze.
 
@@ -48,8 +48,13 @@ The first dependency we are going to use is `reqwest`: a crate similar to Python
 
 With its help, we can start defining our download function:
 
-<a id="org22ba2dc"></a>
+<a id="org24456a7"></a>
 ```rust
+// Make sure we have our third-party dependencies.
+// (This is going away in future Rust, since it
+// simply duplicates what's already in Cargo.toml.)
+extern crate reqwest;
+extern crate failure;
 
 // Need to import a couple of things from
 // the standard library
@@ -76,6 +81,9 @@ fn download(url: &str, destination: &Path)
     // the operation completed successfully, we get
     // the result instead.
     let file = File::create(destination)?;
+
+    // We need the `mut` annotation, because
+    // we're mutating (writing to) the writer.
     let mut writer = BufWriter::new(file);
 
     let mut response = reqwest::get(url)?;
@@ -87,7 +95,7 @@ fn download(url: &str, destination: &Path)
 
 With this, we can write a short function that downloads both the ratings file and a file that contains metadata on the books from the dataset:
 
-<a id="orgdcc3c2a"></a>
+<a id="org8b14155"></a>
 ```rust
 /// Download ratings and metadata both.
 fn download_data(ratings_path: &Path, books_path: &Path) {
@@ -121,7 +129,7 @@ We have two options for parsing the resulting CSV files. One is to parse things 
 
 The heart of Rust's serialization ecosystem lies in the [`serde` crate](https://serde.rs/). It provides traits that allow structs to be seamlessly serialized and deserialized across a variety for formats. We'll derive those on a `WishlistEntry` struct to be able to read it from the CSV file:
 
-<a id="org7962a11"></a>
+<a id="org9aff855"></a>
 ```rust
 // Importing this allows us to autoderive
 // the serialization traits.
@@ -145,7 +153,7 @@ struct WishlistEntry {
 
 After importing the `csv` crate we're ready to write the deserialize function:
 
-<a id="orga3c7e72"></a>
+<a id="orgf1efede"></a>
 ```rust
 extern crate csv;
 
@@ -174,7 +182,7 @@ We also want to deserialize the metadata. We're only really interested in the bo
 
 As before, we define a struct and a corresponding deserialize function. This time, we are going to return two mappings instead of a vector: the first mapping book ids to book titles, the second book titles to book ids.
 
-<a id="org2666e67"></a>
+<a id="orgdf0859a"></a>
 ```rust
 #[derive(Debug, Deserialize, Serialize)]
 struct Book {
@@ -237,7 +245,7 @@ Despite its simplicity, the model seems to perform fairly well on the Movielens 
 
 The first thing we need to do is to write a function that will set up all the hyperparameters of the model:
 
-<a id="org94e46d9"></a>
+<a id="org1f6d26b"></a>
 ```rust
 extern crate sbr;
 
@@ -263,7 +271,7 @@ fn build_model(num_items: usize) -> ImplicitEWMAModel {
 
 The second is to convert the `WishlistEntry` objects into `sbr`'s [`Interaction`](https://docs.rs/sbr/0.4.0/sbr/data/struct.Interactions.html) objects:
 
-<a id="org9524419"></a>
+<a id="org77201b1"></a>
 ```rust
 use sbr::data::{Interaction, Interactions};
 
@@ -303,7 +311,7 @@ fn build_interactions(data: &[WishlistEntry]) -> Interactions {
 
 The model fitting itself is easy: we've set up the data and hyperparameters, and all that is left is to fit the model, making sure we have a train-test split to evaluate performance:
 
-<a id="org930b43a"></a>
+<a id="org7a8b5f3"></a>
 ```rust
 // We need to import the rand crate.
 extern crate rand;
@@ -345,7 +353,7 @@ On my machine, this takes about a minute and a half, and achieves an MRR of 0.09
 
 Once we have the model, we'll want to save it for future use. Again, we'll use the `serde` library to do so:
 
-<a id="org77278a5"></a>
+<a id="orgab53a45"></a>
 ```rust
 fn serialize_model(model: &ImplicitEWMAModel,
                    path: &Path) -> Result<(), failure::Error> {
@@ -359,7 +367,7 @@ fn serialize_model(model: &ImplicitEWMAModel,
 
 Wiring all the bits together gives
 
-<a id="org6dfbf0f"></a>
+<a id="orgf9e10f7"></a>
 ```rust
 /// Download training data and build a model.
 ///
@@ -406,7 +414,7 @@ We need two bits here: (1) deserializing the model, and (2) getting predictions.
 
 For the first, the following should suffice:
 
-<a id="org7bfd96e"></a>
+<a id="org2bfd1bf"></a>
 ```rust
 use std::io::BufReader;
 
@@ -424,7 +432,7 @@ fn deserialize_model() -> Result<ImplicitEWMAModel,
 
 For the second, we'll accept a sequence of book titles as input, translate to indices, get predictions, and translate back to book titles.
 
-<a id="org3dbfef8"></a>
+<a id="orgfb83dd4"></a>
 ```rust
 fn predict(input_titles: &[String],
            model: &ImplicitEWMAModel)
@@ -487,7 +495,7 @@ fn predict(input_titles: &[String],
 
 Finally, we can write our `main` function. It'll look at the command line arguments and call either the model building or the prediction functions.
 
-<a id="org970da27"></a>
+<a id="orgce807e4"></a>
 ```rust
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -502,7 +510,7 @@ fn main() {
     // `&str` here. This is one of the few
     // cases where Rust's ergonomics still
     // have some way to go.
-    match &args[0][..] {
+    match args[0].as_ref() {
         "fit" => main_build(),
         "predict" => {
             let model = deserialize_model()
@@ -566,7 +574,7 @@ The final result looks like this:
 
 ### Cargo.toml {#cargo-dot-toml}
 
-<a id="org3d195ca"></a>
+<a id="orgac5f7c1"></a>
 ```text
 [package]
 name = "goodbooks-recommender"
@@ -589,11 +597,8 @@ rand = "0.5.4"
 
 ### main.rs {#main-dot-rs}
 
-<a id="org02a6c2c"></a>
+<a id="orgd554dfc"></a>
 ```rust
-extern crate reqwest;
-extern crate failure;
-
 // Importing this allows us to autoderive
 // the serialization traits.
 #[macro_use]
@@ -613,6 +618,11 @@ struct WishlistEntry {
     book_id: usize,
 }
 
+// Make sure we have our third-party dependencies.
+// (This is going away in future Rust, since it
+// simply duplicates what's already in Cargo.toml.)
+extern crate reqwest;
+extern crate failure;
 
 // Need to import a couple of things from
 // the standard library
@@ -639,6 +649,9 @@ fn download(url: &str, destination: &Path)
     // the operation completed successfully, we get
     // the result instead.
     let file = File::create(destination)?;
+
+    // We need the `mut` annotation, because
+    // we're mutating (writing to) the writer.
     let mut writer = BufWriter::new(file);
 
     let mut response = reqwest::get(url)?;
@@ -920,7 +933,7 @@ fn main() {
     // `&str` here. This is one of the few
     // cases where Rust's ergonomics still
     // have some way to go.
-    match &args[0][..] {
+    match args[0].as_ref() {
         "fit" => main_build(),
         "predict" => {
             let model = deserialize_model()
