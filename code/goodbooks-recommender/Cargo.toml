@@ -1,0 +1,16 @@
+[package]
+name = "goodbooks-recommender"
+version = "0.1.0"
+authors = ["Maciej Kula"]
+
+[dependencies]
+reqwest = "0.8.6"
+failure = "0.1.1"
+
+# I'll mention the remaining dependencies later
+serde = "1.0.0"
+serde_derive = "1.0.0"
+serde_json = "1.0.0"
+csv = "1.0.0"
+sbr = "0.4.0"
+rand = "0.5.4"

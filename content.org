@@ -4,7 +4,8 @@
 #+hugo_weight: auto
 #+hugo_auto_set_lastmod: t
 * Engineering                                                  :@engineering:
-** TODO Building a recommender system in Rust, part 1
+** DONE Recommending books (with Rust)
+CLOSED: [2018-07-27 Fri 09:17]
 :PROPERTIES:
 :EXPORT_FILE_NAME: recommender-in-rust-part-1
 :EXPORT_HUGO_CUSTOM_FRONT_MATTER: :math true
@@ -15,12 +16,26 @@ CLOCK: [2018-07-21 Sat 09:45]--[2018-07-21 Sat 10:15] =>  0:30
 CLOCK: [2018-07-20 Fri 22:28]--[2018-07-20 Fri 22:58] =>  0:30
 :END:
 
-In this post, we're going to build a recommender system in Rust.
+In this post, we're going to build a sequence-based recommender system in Rust: a sytem that accepts a person's reading history as input, and outputs recommendations on what to read next.
+
+Building systems like this -- like much of machine learning and data science -- is normally the province of Python. The combination of numpy, pandas, and other libraries that build on them makes doing data science in Python a breeze.
+
+Nevertheless, there are advantages of using statically typed programming languages for some machine learning tasks: help from the compiler, better self-documentation capacity, and speed of the resulting code. This is part of the motivation behind building [[https://github.com/tensorflow/swift][Tensorflow for Swift]]: modern statically typed programming languages with good ergonomics, an expressive type system, and value types bring a lot of advantages.
+
+In this blog post, I hope to show that these advantages do not come at the cost of verbose code and complexity that distracts from the main task. In many ways, Rust comes very close to the ergonomics and expressiveness of Python.
+
+You can read this post like a Jupyter notebook: a series of steps that builds into a complete program. To see the end result, jump to the appendix, or have a look at the [[https://github.com/maciejkula/hugo-blog/tree/master/code/goodbooks-recommender/][Github repository]].
+
 *** Setting up a project
 Rust projects follow a certain structure, and we can set up a new project using ~cargo~:
 #+BEGIN_SRC bash
 cargo new --bin goodbooks-recommender
 #+END_SRC
+This will set up a new directory (and a git repository), containing a ~Cargo.toml~ file with information about the package, and a ~main.rs~ file that contains our code. To run the code, run
+#+BEGIN_SRC bash
+cargo run
+#+END_SRC
+This will download the dependencies, compile the code, and run the binary all in one. (We will want to run ~cargo run --release~ once we start fitting models: this turns on the optimization passes in the compile step.)
 
 *** Getting the data
 :LOGBOOK:
@@ -34,6 +49,8 @@ name = "goodbooks-recommender"
 version = "0.1.0"
 authors = ["Maciej Kula"]
 #+END_SRC
+
+To train the model, we'll use the [[https://github.com/zygmuntz/goodbooks-10k][Goodbooks-10k dataset]]: a dataset of approximately 6 million ratings over 10,000 books from over 50,000 users, derived from the popular Goodreads service. 
 
 The first dependency we are going to use is ~reqwest~: a crate similar to Python's ~requests~ that will allow us to easily download the data we need. The second is ~failure~, a crate that makes dealing with errors easier.
 
@@ -142,7 +159,8 @@ The heart of Rust's serialization ecosystem lies in the [[https://serde.rs/][~se
   extern crate serde;
 
   // An implementation of the serde encoders/decoders
-  // to and from json. We'll need this later!
+  // to and from a JSON. We'll need
+  // these later.
   extern crate serde_json;
 
   #[derive(Debug, Serialize, Deserialize)]
@@ -241,7 +259,7 @@ Despite its simplicity, the model seems to perform fairly well on the Movielens 
 
 **** Setting up hyperparameters
 :LOGBOOK:
-CLOCK: [2018-07-25 Wed 18:03]
+CLOCK: [2018-07-25 Wed 18:03]--[2018-07-25 Wed 19:29] =>  1:26
 :END:
 The first thing we need to do is to write a function that will set up all the hyperparameters of the model:
 #+NAME: main-hyperparameters
@@ -407,15 +425,15 @@ We need two bits here: (1) deserializing the model, and (2) getting predictions.
 For the first, the following should suffice:
 #+NAME: main-model-deserialize
 #+BEGIN_SRC rust
-  use std::io::Read;
   use std::io::BufReader;
 
   fn deserialize_model() -> Result<ImplicitEWMAModel,
                                    failure::Error> {
 
       let file = File::open("model.json")?;
+      let reader = BufReader::new(file);
 
-      let model = serde_json::from_reader(&file)?;
+      let model = serde_json::from_reader(reader)?;
 
       Ok(model)
   }
@@ -514,11 +532,10 @@ Finally, we can write our ~main~ function. It'll look at the command line argume
     }
 #+END_SRC
 
-What about the results? They look reasonable at first blush:
+What about the results? They look reasonable at first blush if you are a fan of the Harry Potter series:
 #+BEGIN_SRC shell
 time cargo run --release -- predict "Harry Potter and the Order of the Phoenix (Harry Potter, #5, Part 1)"
   Finished release [optimized] target(s) in 0.12s
-     Running `target/release/goodbooks-recommender predict 'Harry Potter and the Order of the Phoenix (Harry Potter, #5, Part 1)'`
 Predictions:
     Harry Potter and the Order of the Phoenix (Harry Potter, #5, Part 1)
     Harry Potter and the Prisoner of Azkaban (Harry Potter, #3)
@@ -532,7 +549,25 @@ Predictions:
     Harry Potter and the Order of the Phoenix (Harry Potter, #5)
 
 #+END_SRC
-*** The finished article
+If you prefer Faulkner, the results are relatively sensible too:
+#+BEGIN_SRC shell
+time cargo run --release -- predict "As I Lay Dying"
+Predictions:
+    As I Lay Dying
+    A Portrait of the Artist as a Young Man
+    The Sound and the Fury
+    Death of a Salesman
+    The Things They Carried
+    The Awakening
+    Invisible Man
+    A Separate Peace
+    The House on Mango Street
+    The Glass Menagerie
+#+END_SRC
+
+We've got a working model. Of course, serving recommendations via a CLI tool is not very useful: ideally, we'd have a web service that can serve these more widely. This, however, will have to wait for another blog post.
+*** Appendix
+The final result looks like this:
 **** Cargo.toml
 #+NAME: cargo-toml-dependencies
 #+BEGIN_SRC text :noweb yes :exports code :tangle code/goodbooks-recommender/Cargo.toml
