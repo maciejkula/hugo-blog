@@ -150,6 +150,7 @@ user_id,book_id
 
 **** Parsing
 :LOGBOOK:
+CLOCK: [2018-07-29 Sun 13:28]--[2018-07-29 Sun 13:28] =>  0:00
 CLOCK: [2018-07-22 Sun 19:26]--[2018-07-22 Sun 19:52] =>  0:26
 CLOCK: [2018-07-21 Sat 13:44]--[2018-07-21 Sat 14:59] =>  1:15
 :END:
@@ -197,7 +198,7 @@ After importing the ~csv~ crate we're ready to write the deserialize function:
       // We also do a further trick where instead of deserializing
       // into a vector of results, we deserialize into a result with
       // a vector.
-      let entries: Vec<WishlistEntry> = reader.deserialize()
+      let entries = reader.deserialize()
           .collect::<Result<Vec<_>, _>>()?;
 
       Ok(entries)

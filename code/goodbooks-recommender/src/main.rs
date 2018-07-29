@@ -74,7 +74,7 @@ fn deserialize_ratings(path: &Path)
     // We also do a further trick where instead of deserializing
     // into a vector of results, we deserialize into a result with
     // a vector.
-    let entries: Vec<WishlistEntry> = reader.deserialize()
+    let entries = reader.deserialize()
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(entries)
